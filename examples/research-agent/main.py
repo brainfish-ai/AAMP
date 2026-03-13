@@ -36,7 +36,7 @@ from aamp_sdk.identity import KeyPair, create_did_web, create_did_web_document
 from aamp_sdk.types import Envelope, ProbeResponse, CostEstimate, MessageType, AAMP_VERSION
 
 
-RELAY_B_URL  = os.getenv("RELAY_B_URL", "http://localhost:8081")
+RELAY_B_URL  = os.getenv("RELAY_B_URL", "http://localhost:8086")
 NATS_URL     = os.getenv("NATS_URL", "nats://localhost:4222")
 DOMAIN       = os.getenv("RELAY_DOMAIN", "company-b.local")
 AGENT_ID     = os.getenv("AGENT_ID", "research-bot-01")
@@ -109,9 +109,10 @@ async def main():
     @agent.task_handler("summarize-pdf")
     async def handle_summarize(envelope: Envelope, respond) -> None:
         task_payload = envelope.payload or {}
+        # Support both flat payload (from demo UI) and nested input (from CLI finance agent)
         pdf_input    = task_payload.get("input", {})
-        pdf_url      = pdf_input.get("url", "unknown")
-        focus_areas  = pdf_input.get("focus", [])
+        pdf_url      = task_payload.get("url", pdf_input.get("url", "unknown"))
+        focus_areas  = task_payload.get("focus", pdf_input.get("focus", []))
 
         print(f"\n[research-agent] Received summarize-pdf task")
         print(f"[research-agent] PDF URL: {pdf_url}")

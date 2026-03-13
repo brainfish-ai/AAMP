@@ -36,10 +36,18 @@ export class AgentRegistry {
       keyPair,
       `${relayPublicUrl}/inbound`,
     );
+    return this.registerWithDocument(agentId, card, didDocument);
+  }
 
+  /** Register an agent when the DID Document is already available (no key pair required). */
+  registerWithDocument(
+    agentId: string,
+    card: AgentCard,
+    didDocument: DIDDocument,
+  ): AgentRegistration {
     const reg: AgentRegistration = {
       agentId,
-      did,
+      did:          card.did,
       card,
       didDocument,
       registeredAt: Date.now(),
@@ -47,7 +55,7 @@ export class AgentRegistry {
     };
 
     this.agents.set(agentId, reg);
-    this.agents.set(did, reg);   // index by DID too
+    this.agents.set(card.did, reg);   // index by DID too
     return reg;
   }
 

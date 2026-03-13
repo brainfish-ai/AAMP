@@ -93,29 +93,46 @@ export async function buildServer(config: RelayConfig, nats: NatsContext) {
       // Build a DID Document from the Agent Card's public key and cache it in
       // the local resolver so signature verification doesn't need an outbound
       // HTTP fetch for DID documents — critical for local/private domains.
+      // Build a DID Document from the Agent Card's public key, cache it in the
+      // resolver (avoids outbound HTTP fetches for local domains), and store it
+      // in the registry so GET /agents/:agentId works.
+      let didDocument: Parameters<typeof registry.registerWithDocument>[2] = {
+        "@context":         ["https://www.w3.org/ns/did/v1"],
+        id:                 card.did,
+        verificationMethod: [],
+        authentication:     [],
+        assertionMethod:    [],
+        service:            [],
+      };
+
       if (card.publicKey) {
         try {
           const pubKeyBytes = new Uint8Array(Buffer.from(card.publicKey as string, "base64"));
           const multibase   = publicKeyToMultibase(pubKeyBytes);
           const keyId       = `${card.did}#key-1`;
-          resolver.register(card.did, {
+          didDocument = {
             "@context":          ["https://www.w3.org/ns/did/v1"],
             id:                  card.did,
             verificationMethod:  [{ id: keyId, type: "Ed25519VerificationKey2020", controller: card.did, publicKeyMultibase: multibase }],
             authentication:      [keyId],
             assertionMethod:     [keyId],
             service:             [],
-          });
+          };
+          resolver.register(card.did, didDocument);
         } catch (e) {
           console.warn(`[relay] Could not cache DID doc for ${card.did}:`, e);
         }
       }
+
+      // Add to agent registry (makes GET /agents and GET /agents/:agentId work)
+      registry.registerWithDocument(agentId, card, didDocument);
 
       await ensureAgentConsumer(nats.jsm, config, agentId);
 
       // Start delivering queued NATS messages to this agent via SSE if connected
       subscribeNatsToSse(nats, config, agentId, sseClients);
 
+      console.log(`[relay] Agent registered: ${agentId} (${card.did})`);
       return reply.code(201).send({ agentId, did: card.did, mailboxSubject: `aamp.${config.domain}.${agentId}.inbox` });
     },
   );
