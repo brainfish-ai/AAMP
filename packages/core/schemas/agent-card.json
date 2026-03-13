@@ -1,0 +1,119 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aamp-protocol.dev/schemas/agent-card.json",
+  "title": "AAMP Agent Card",
+  "description": "Discovery document that every AAMP agent publishes. Serves as the 'business card' and 'MX record' equivalent — tells the world who the agent is, what it can do, and how to reach it.",
+  "type": "object",
+  "required": ["aampVersion", "did", "name", "endpoint", "mailboxSubject", "capabilities", "publicKey", "updatedAt"],
+  "properties": {
+    "aampVersion": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "AAMP protocol version this agent implements",
+      "example": "0.1.0"
+    },
+    "did": {
+      "type": "string",
+      "pattern": "^did:[a-z]+:.+",
+      "description": "Agent's Decentralized Identifier. Use did:key for ephemeral agents, did:web for persistent/org agents.",
+      "examples": [
+        "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+        "did:web:acme.com/agents/finance-bot-01"
+      ]
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable agent name"
+    },
+    "description": {
+      "type": "string",
+      "description": "What this agent does"
+    },
+    "endpoint": {
+      "type": "string",
+      "format": "uri",
+      "description": "HTTPS base URL of this agent's relay inbound endpoint (for inter-relay federation)"
+    },
+    "mailboxSubject": {
+      "type": "string",
+      "description": "NATS subject this agent subscribes to. Format: aamp.<domain>.<agentId>.inbox",
+      "example": "aamp.acme.finance-bot-01.inbox"
+    },
+    "capabilities": {
+      "type": "array",
+      "description": "List of capabilities this agent exposes",
+      "items": {
+        "$ref": "#/$defs/capability"
+      }
+    },
+    "supportedRoutingModes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "BLIND_TRANSFER",
+          "SUPERVISED_TRANSFER",
+          "SIDEBAR",
+          "CONFERENCE",
+          "PASSTHROUGH"
+        ]
+      },
+      "description": "Which AAMP routing modes this agent supports"
+    },
+    "authMethods": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["ucan", "did-key", "oauth2"]
+      },
+      "description": "Accepted authentication/authorization methods"
+    },
+    "publicKey": {
+      "type": "string",
+      "description": "Multibase-encoded Ed25519 public key (z-prefix = base58btc). Used to verify signed envelopes."
+    },
+    "updatedAt": {
+      "type": "integer",
+      "description": "Unix milliseconds when this card was last updated"
+    }
+  },
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "required": ["id", "name", "description"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique capability identifier (kebab-case)",
+          "example": "summarize-pdf"
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable capability name"
+        },
+        "description": {
+          "type": "string",
+          "description": "What this capability does"
+        },
+        "inputSchemaUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL to the JSON Schema for capability input"
+        },
+        "outputSchemaUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL to the JSON Schema for capability output"
+        },
+        "estimatedCost": {
+          "type": "object",
+          "properties": {
+            "unit": { "type": "string", "enum": ["tokens", "usd", "compute-seconds"] },
+            "maxUnits": { "type": "number" },
+            "currency": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

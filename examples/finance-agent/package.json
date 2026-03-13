@@ -1,0 +1,21 @@
+{
+  "name": "@aamp/example-finance-agent",
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Example: Finance Agent (Company A) — sends a task to Research Agent (Company B) via AAMP",
+  "private": true,
+  "scripts": {
+    "start": "node --loader ts-node/esm src/index.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@aamp/sdk": "workspace:*",
+    "@aamp/core": "workspace:*",
+    "@aamp/identity": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "@types/node": "^22.10.7",
+    "ts-node": "^10.9.2"
+  }
+}

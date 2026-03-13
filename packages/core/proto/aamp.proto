@@ -1,0 +1,166 @@
+syntax = "proto3";
+
+package aamp.v1;
+
+option java_package = "io.aamp.v1";
+option java_outer_classname = "AampProto";
+option go_package = "github.com/aamp-protocol/aamp/gen/go/aamp/v1;aampv1";
+
+// ─────────────────────────────────────────────────────────────
+//  Routing modes — maps to the five inter-agent topologies
+//  defined in IETF draft-rosenberg-ai-protocols-00
+// ─────────────────────────────────────────────────────────────
+enum RoutingMode {
+  ROUTING_MODE_UNSPECIFIED       = 0;
+  ROUTING_MODE_BLIND_TRANSFER    = 1; // Agent A hands off; no longer involved
+  ROUTING_MODE_SUPERVISED_TRANSFER = 2; // Agent A monitors until B confirms receipt
+  ROUTING_MODE_SIDEBAR           = 3; // Agent A spawns B for a sub-task, stays primary
+  ROUTING_MODE_CONFERENCE        = 4; // Multiple agents collaborate on the same task
+  ROUTING_MODE_PASSTHROUGH       = 5; // Agent A proxies between user and Agent B
+}
+
+// Task lifecycle states
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED            = 0;
+  TASK_STATUS_SUBMITTED              = 1;
+  TASK_STATUS_RUNNING                = 2;
+  TASK_STATUS_BLOCKED                = 3; // waiting on human or external resource
+  TASK_STATUS_AWAITING_CONFIRMATION  = 4; // needs human sign-off before proceeding
+  TASK_STATUS_COMPLETED              = 5;
+  TASK_STATUS_FAILED                 = 6;
+  TASK_STATUS_CANCELLED              = 7;
+}
+
+// Control message types
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED     = 0;
+  MESSAGE_TYPE_TASK            = 1; // Submit a new task
+  MESSAGE_TYPE_RESPONSE        = 2; // Return task result
+  MESSAGE_TYPE_STATUS          = 3; // Heartbeat / status update
+  MESSAGE_TYPE_PROBE           = 4; // Capability negotiation request
+  MESSAGE_TYPE_PROBE_RESPONSE  = 5; // Capability negotiation response
+  MESSAGE_TYPE_CONFIRM         = 6; // Human-in-the-loop confirmation
+  MESSAGE_TYPE_CANCEL          = 7; // Cancel an in-flight task
+}
+
+// ─────────────────────────────────────────────────────────────
+//  The AAMP Envelope — the atomic unit of inter-agent comms.
+//  All fields except `payload` are part of the signed surface.
+// ─────────────────────────────────────────────────────────────
+message Envelope {
+  // ── Identity ──────────────────────────────────────────────
+  string message_id    = 1;  // UUID v7 (time-ordered, globally unique)
+  string sender_did    = 2;  // e.g. did:key:z6Mk... or did:web:acme.com/agents/finance-01
+  string recipient_did = 3;  // target agent DID
+
+  // ── Task threading (analogous to SMTP References chain) ───
+  string task_id        = 4;  // unique ID for this task
+  string parent_task_id = 5;  // ID of the parent task (if this is a sub-task)
+  string root_task_id   = 6;  // ID of the originating root task
+
+  // ── Routing ───────────────────────────────────────────────
+  string reply_to_mailbox = 7;  // NATS subject or mailbox URI for the response
+  int64  ttl_ms           = 8;  // time-to-live in milliseconds (0 = no expiry)
+  RoutingMode routing_mode = 9;
+  MessageType message_type = 10;
+  TaskStatus  status       = 11;
+
+  // ── Security ──────────────────────────────────────────────
+  // UCAN-inspired capability token (JSON bytes, base64url encoded internally)
+  bytes ucan_proof = 12;
+  // Ed25519 signature over canonical fields 1–12 (before this field)
+  bytes signature  = 13;
+
+  // ── Content ───────────────────────────────────────────────
+  bytes  payload      = 14;  // application-specific content
+  string content_type = 15;  // "application/json" | "application/protobuf"
+
+  // ── Metadata ──────────────────────────────────────────────
+  map<string, string> metadata   = 16;
+  int64               created_at = 17;  // Unix milliseconds
+  string              aamp_version = 18; // protocol version, e.g. "0.1.0"
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Capability Negotiation (PROBE / PROBE_RESPONSE)
+// ─────────────────────────────────────────────────────────────
+message ProbeRequest {
+  string capability_id             = 1;  // e.g. "summarize-pdf"
+  map<string, string> parameters   = 2;  // hint parameters for cost estimation
+}
+
+message ProbeResponse {
+  bool          accepted             = 1;
+  string        rejection_reason     = 2;
+  CostEstimate  cost_estimate        = 3;
+  int64         estimated_latency_ms = 4;
+  int64         token_expires_in_ms  = 5;  // how long the "slot" is reserved
+}
+
+message CostEstimate {
+  string unit      = 1;  // "tokens" | "usd" | "compute-seconds"
+  int64  max_units = 2;
+  string currency  = 3;  // ISO 4217 if unit == "usd"
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Task Payload — carried in Envelope.payload
+// ─────────────────────────────────────────────────────────────
+message TaskPayload {
+  string capability_id = 1;
+  bytes  input         = 2;  // JSON-encoded input matching capability schema
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Task Result — carried in Envelope.payload on response
+// ─────────────────────────────────────────────────────────────
+message TaskResult {
+  bool             success       = 1;
+  bytes            output        = 2;  // JSON-encoded output
+  string           error_code    = 3;
+  string           error_message = 4;
+  repeated Artifact artifacts   = 5;
+}
+
+message Artifact {
+  string id           = 1;
+  string name         = 2;
+  string content_type = 3;
+  bytes  data         = 4;  // inline for small artifacts
+  string url          = 5;  // remote reference for large artifacts
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Status Update — carried in Envelope.payload for heartbeats
+// ─────────────────────────────────────────────────────────────
+message StatusUpdate {
+  TaskStatus status           = 1;
+  string     message          = 2;
+  int32      progress_percent = 3;  // 0–100
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Agent Card — discovery document (also represented as JSON)
+// ─────────────────────────────────────────────────────────────
+message AgentCard {
+  string   aamp_version    = 1;
+  string   did             = 2;
+  string   name            = 3;
+  string   description     = 4;
+  string   endpoint        = 5;  // HTTPS base URL
+  string   mailbox_subject = 6;  // NATS subject pattern
+  repeated Capability capabilities = 7;
+  repeated string supported_routing_modes = 8;
+  repeated string auth_methods            = 9;
+  string   public_key      = 10; // base58btc-encoded Ed25519 public key
+  int64    updated_at      = 11; // Unix milliseconds
+}
+
+message Capability {
+  string name        = 1;
+  string id          = 2;
+  string description = 3;
+  string input_schema_url  = 4;
+  string output_schema_url = 5;
+  CostEstimate estimated_cost = 6;
+}

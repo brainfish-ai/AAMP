@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.turbo/
+*.env
+*.env.local
+coverage/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+.DS_Store
+*.log
+nats-data/

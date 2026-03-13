@@ -1,0 +1,27 @@
+{
+  "name": "@aamp/identity",
+  "version": "0.1.0",
+  "description": "AAMP identity layer: Ed25519 keypairs, DID (did:key / did:web), envelope signing, capability tokens",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@noble/ed25519": "^2.1.0",
+    "@noble/hashes": "^1.7.1",
+    "@aamp/core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "@types/node": "^22.10.7"
+  }
+}

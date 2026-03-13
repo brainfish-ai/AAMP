@@ -1,0 +1,28 @@
+{
+  "name": "@aamp/sdk",
+  "version": "0.1.0",
+  "description": "AAMP TypeScript SDK — drop-in agent.listen(protocol='aamp') for your AI agent",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@aamp/core": "workspace:*",
+    "@aamp/identity": "workspace:*",
+    "nats": "^2.28.2",
+    "uuid": "^11.0.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "@types/node": "^22.10.7"
+  }
+}

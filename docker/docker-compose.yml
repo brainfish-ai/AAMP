@@ -1,0 +1,107 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────
+#  AAMP Local Development Stack
+#
+#  Services:
+#    nats     — NATS Server with JetStream (the async message bus)
+#    relay-a  — AAMP Relay for Company A (domain: company-a.local)
+#    relay-b  — AAMP Relay for Company B (domain: company-b.local)
+#
+#  This setup simulates TWO separate companies with their own relays,
+#  communicating via inter-relay federation over the shared Docker network.
+#  In production each relay runs on its own infrastructure.
+#
+#  Usage:
+#    docker-compose up
+#    # relay-a → http://localhost:8080
+#    # relay-b → http://localhost:8081
+#    # NATS monitoring → http://localhost:8223
+# ─────────────────────────────────────────────────────────────
+
+networks:
+  aamp-net:
+    driver: bridge
+
+volumes:
+  nats-data:
+
+services:
+
+  # ── NATS JetStream ──────────────────────────────────────────
+  nats:
+    image: nats:2.10-alpine
+    container_name: aamp-nats
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    ports:
+      - "4222:4222"   # NATS TCP
+      - "8222:8222"   # NATS WebSocket
+      - "8223:8223"   # HTTP monitoring
+    volumes:
+      - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro
+      - nats-data:/data/nats
+    networks:
+      - aamp-net
+    healthcheck:
+      test: ["CMD", "nats-server", "--signal", "ping=nats"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # ── AAMP Relay A (Company A) ────────────────────────────────
+  relay-a:
+    build:
+      context: ..
+      dockerfile: packages/relay/Dockerfile
+    container_name: aamp-relay-a
+    environment:
+      RELAY_PORT:              "8080"
+      NATS_URL:                "nats://nats:4222"
+      RELAY_PUBLIC_URL:        "http://relay-a:8080"
+      RELAY_DOMAIN:            "company-a.local"
+      RELAY_STREAM_NAME:       "AAMP_MESSAGES_A"
+      RELAY_REQUIRE_CAPABILITY_PROOF: "false"
+    ports:
+      - "8080:8080"
+    networks:
+      - aamp-net
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── AAMP Relay B (Company B) ────────────────────────────────
+  relay-b:
+    build:
+      context: ..
+      dockerfile: packages/relay/Dockerfile
+    container_name: aamp-relay-b
+    environment:
+      RELAY_PORT:              "8080"
+      NATS_URL:                "nats://nats:4222"
+      RELAY_PUBLIC_URL:        "http://relay-b:8080"
+      RELAY_DOMAIN:            "company-b.local"
+      RELAY_STREAM_NAME:       "AAMP_MESSAGES_B"
+      RELAY_REQUIRE_CAPABILITY_PROOF: "false"
+    ports:
+      - "8081:8080"
+    networks:
+      - aamp-net
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped

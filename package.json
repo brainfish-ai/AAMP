@@ -1,0 +1,27 @@
+{
+  "name": "aamp",
+  "version": "0.1.0",
+  "description": "Agent-to-Agent Messaging Protocol — federated, asynchronous, cryptographically-secure inter-agent communication",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "clean": "turbo run clean",
+    "relay": "pnpm --filter @aamp/relay dev",
+    "demo": "docker-compose -f docker/docker-compose.yml up -d && echo 'Relay ready at http://localhost:8080'"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.3",
+    "@types/node": "^22.10.7",
+    "prettier": "^3.4.2",
+    "eslint": "^9.18.0"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.15.4"
+}
