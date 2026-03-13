@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+/* React Flow overrides — keep the canvas transparent */
+.react-flow__renderer {
+  background: transparent;
+}
+
+.react-flow__node {
+  cursor: default !important;
+}
