@@ -219,10 +219,10 @@ AAMP inherits all of these properties. The only difference: instead of DNS MX re
 ### The "Mailbox" Pattern
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│  COMPANY A                                                          │
-│  (private network / sandbox)                                        │
-│                                                                     │
+┌───────────────────────────────────────────────────────────────────┐
+│  COMPANY A                                                        │
+│  (private network / sandbox)                                      │
+│                                                                   │
 │   ┌──────────────┐  outbound NATS WS   ┌──────────────────────┐   │
 │   │ Finance Bot  │ ──────────────────► │                      │   │
 │   │ (LangGraph)  │                     │   RELAY A            │   │
@@ -232,93 +232,94 @@ AAMP inherits all of these properties. The only difference: instead of DNS MX re
 │   │ Analyst Bot  │ ──────────────────► │   publicly reachable │   │
 │   │ (CrewAI)     │                     │   relay.company-a.com│   │
 │   └──────────────┘                     └──────────┬───────────┘   │
-│                                                    │               │
-└────────────────────────────────────────────────────│───────────────┘
-                                                     │ HTTPS POST /inbound
+│                                                   │               │
+└───────────────────────────────────────────────────│───────────────┘
+                                                    │ HTTPS POST /inbound
                                               PUBLIC INTERNET
-                                                     │
-┌────────────────────────────────────────────────────│───────────────┐
-│  COMPANY B                                         │               │
-│  (private network / sandbox)          ┌────────────▼─────────┐   │
-│                                        │   RELAY B            │   │
-│   ┌──────────────┐  outbound NATS WS   │   (NATS JetStream    │   │
-│   │ Research Bot │ ◄────────────────── │    + HTTP gateway)   │   │
-│   │ (Python)     │                     │                      │   │
-│   └──────────────┘                     │   relay.company-b.com│   │
-│                                        └──────────────────────┘   │
-└────────────────────────────────────────────────────────────────────┘
+                                                    │
+┌───────────────────────────────────────────────────│──────────────┐
+│  COMPANY B                                        │              │
+│  (private network / sandbox)          ┌───────────▼────────-─┐    │
+│                                       │   RELAY B            │   │
+│   ┌──────────────┐  outbound NATS WS  │   (NATS JetStream    │   │
+│   │ Research Bot │ ◄──────────────────│    + HTTP gateway)   │   │
+│   │ (Python)     │                    │                      │   │
+│   └──────────────┘                    │   relay.company-b.com│   │
+│                                       └──────────────────────┘   │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 **Key insight:** Agents only make **outbound** connections to their own relay. No inbound ports. No firewall rules. Works behind NAT, in Docker, in Kubernetes, in cloud functions — anywhere a browser can make a WebSocket connection.
 
 ### Cross-Company Communication Flow
 
-Here is the complete message lifecycle when Finance Bot (Company A) sends a task to Research Bot (Company B):
+Complete message lifecycle when Finance Bot (Company A) sends a task to Research Bot (Company B):
 
-```
-Step  Finance Bot        Relay A              Relay B         Research Bot
-────  ───────────────    ─────────────────    ────────────    ────────────────
- 1.   generate keypair
-      create DID
-      register with Relay A ────────────────►
-                         create NATS consumer
-                         store Agent Card
- 2.   Research Bot registers with Relay B ──────────────────►
-                                                             (separate company)
- 3.   probe(to=ResearchBot,
-            cap="summarize-pdf") ──────────►
-                         resolve ResearchBot's DID
-                         → finds Relay B endpoint
-                         POST /inbound ─────────────────────►
-                                                             deliver PROBE
-                                                             ◄────────────────
-                                              ◄── response ──
-                         ◄── deliver ─────────
-      ◄── ProbeResponse ─
-       (accepted, cost estimate)
- 4.   sign envelope with Ed25519
-      issue UCAN token
-            (scope: summarize-pdf on ResearchBot)
-      send(to=ResearchBot, ...) ──────────────►
-                         verify signature
-                         verify UCAN scope
-                         POST /inbound ─────────────────────►
-                                              verify signature
-                                              store in JetStream
-                                              deliver to NATS subject
-                                                             ◄── NATS msg ────
- 5.                                                          process task
-                                                             (LLM call, etc.)
- 6.                                                          sign response
-                                                             send response ──►
-                                              ◄── POST /inbound ──────────────
-                                                             (signed response)
-                         ◄── POST /inbound ───
-      ◄── NATS delivery ─
-      receive TaskResult ✓
+```mermaid
+sequenceDiagram
+    participant FA as Finance Bot<br/>(Company A)
+    participant RA as Relay A<br/>(:8085)
+    participant RB as Relay B<br/>(:8086)
+    participant RES as Research Bot<br/>(Company B)
+
+    Note over FA,RA: Step 1 — Identity & Registration (Company A)
+    FA->>FA: generateKeyPair()<br/>createDidKey(pubKey)
+    FA->>RA: POST /agents/register<br/>{agentId, did, card}
+    RA->>RA: create NATS consumer<br/>cache DID Document
+
+    Note over RES,RB: Step 2 — Registration (Company B, independent)
+    RES->>RB: POST /agents/register<br/>{agentId, did, card}
+    RB->>RB: create NATS consumer<br/>cache DID Document
+
+    Note over FA,RES: Step 3 — PROBE: Capability Negotiation
+    FA->>RA: POST /mailbox/finance-bot-01/send<br/>Envelope{type=PROBE, cap="summarize-pdf"}
+    RA->>RA: resolve ResearchBot DID<br/>→ find Relay B endpoint
+    RA->>RB: POST /inbound<br/>federated PROBE envelope
+    RB->>RES: NATS publish<br/>aamp.company-b.local.research-bot-01.inbox
+    RES->>RES: handle_probe()<br/>check capability
+    RES->>RB: POST /mailbox/research-bot-01/send<br/>Envelope{type=PROBE_RESPONSE, accepted=true}
+    RB->>FA: NATS publish via replyToMailbox<br/>aamp.company-a.local.finance-bot-01.inbox
+    FA->>FA: resolve probe()<br/>accepted=true, cost=4096 tokens
+
+    Note over FA,RES: Step 4 — TASK: Signed & Authorized Dispatch
+    FA->>FA: signEnvelope(Ed25519)<br/>issueUcanToken(scope=summarize-pdf)
+    FA->>RA: POST /mailbox/finance-bot-01/send<br/>Envelope{type=TASK, signed, ucan}
+    RA->>RA: verifySignature()<br/>verifyUcanScope()
+    RA->>RB: POST /inbound<br/>federated TASK envelope
+    RB->>RB: verifySignature()<br/>store in JetStream
+    RB->>RES: NATS publish<br/>aamp.company-b.local.research-bot-01.inbox
+
+    Note over RES: Step 5 — Execution
+    RES->>RES: handle_task("summarize-pdf")<br/>process PDF (LLM call, etc.)
+
+    Note over RES,FA: Step 6 — Signed Response routed back
+    RES->>RES: signEnvelope(Ed25519)
+    RES->>RB: POST /mailbox/research-bot-01/send<br/>Envelope{type=RESPONSE, replyToMailbox=...}
+    RB->>FA: NATS publish via replyToMailbox<br/>aamp.company-a.local.finance-bot-01.inbox
+    FA->>FA: resolve send()<br/>TaskResult ✓
 ```
 
 ### Protocol Layers
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  L9  Semantic / Intent Layer                                      │
+│  L9  Semantic / Intent Layer                                     │
 │       What does the agent want to do?                            │
 │       Agent Cards, PROBE negotiation, UCAN capability grants     │
 ├──────────────────────────────────────────────────────────────────┤
-│  L8  AAMP Message Envelope Layer                                  │
+│  L8  AAMP Message Envelope Layer                                 │
 │       Who is talking to whom, about what task?                   │
 │       DID identity, task threading, routing mode, TTL, signature │
 ├──────────────────────────────────────────────────────────────────┤
-│  L7  Transport / Bus Layer                                        │
+│  L7  Transport / Bus Layer                                       │
 │       How does the message get there?                            │
 │       NATS JetStream (intra-org), HTTPS POST (inter-org)         │
 ├──────────────────────────────────────────────────────────────────┤
-│  L6  Serialization Layer                                          │
+│  L6  Serialization Layer                                         │
 │       How is the message encoded?                                │
 │       JSON (default), Protobuf (high-frequency), Avro (audit)    │
 ├──────────────────────────────────────────────────────────────────┤
-│  L5  Identity / Auth Layer                                        │
+│  L5  Identity / Auth Layer                                       │
 │       Who are you and what are you allowed to do?                │
 │       did:key / did:web, Ed25519 signatures, UCAN tokens         │
 └──────────────────────────────────────────────────────────────────┘
