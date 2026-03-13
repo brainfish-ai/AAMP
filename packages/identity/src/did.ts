@@ -158,6 +158,8 @@ export function createDidWebDocument(
 interface CacheEntry {
   document:  DIDDocument;
   fetchedAt: number;
+  /** Manually-registered entries never auto-expire. */
+  permanent?: boolean;
 }
 
 export class DIDResolver {
@@ -170,7 +172,7 @@ export class DIDResolver {
 
   async resolve(did: string): Promise<DIDDocument> {
     const cached = this.cache.get(did);
-    if (cached && Date.now() - cached.fetchedAt < this.ttlMs) {
+    if (cached && (cached.permanent || Date.now() - cached.fetchedAt < this.ttlMs)) {
       return cached.document;
     }
 
@@ -215,9 +217,10 @@ export class DIDResolver {
     return response.json() as Promise<DIDDocument>;
   }
 
-  /** Manually register a DID Document (useful for local/test environments). */
+  /** Manually register a DID Document (useful for local/test environments).
+   *  Permanently cached — never expires due to TTL. */
   register(did: string, document: DIDDocument): void {
-    this.cache.set(did, { document, fetchedAt: Date.now() });
+    this.cache.set(did, { document, fetchedAt: Date.now(), permanent: true });
   }
 
   invalidate(did: string): void {

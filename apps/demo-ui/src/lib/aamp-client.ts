@@ -133,6 +133,35 @@ export async function registerAgent(opts: {
 
 // ─── DID document pre-registration (dev bootstrap) ───────────────────────────
 
+/**
+ * Register THIS agent's DID Document with a REMOTE relay.
+ * The service endpoint points to our home relay's /inbound so the remote relay
+ * can route responses back via HTTP (instead of direct cross-relay NATS publish).
+ */
+export async function preregisterSelfDid(opts: {
+  remoteRelayUrl: string;   // the relay to register with (e.g. Relay B)
+  selfDid:        string;   // this agent's DID
+  homeRelayUrl:   string;   // our relay's base URL (e.g. Relay A)
+}) {
+  const doc = {
+    "@context": ["https://www.w3.org/ns/did/v1"],
+    id:          opts.selfDid,
+    verificationMethod: [],
+    authentication:     [],
+    assertionMethod:    [],
+    service: [{
+      id:              `${opts.selfDid}#aamp-relay`,
+      type:            "AAMPRelay",
+      serviceEndpoint: `${opts.homeRelayUrl}/inbound`,
+    }],
+  };
+  await fetch(`${opts.remoteRelayUrl}/resolver/register`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ did: opts.selfDid, document: doc }),
+  });
+}
+
 export async function preregisterRemoteDid(opts: {
   relayUrl:       string;
   remoteDid:      string;
@@ -195,6 +224,54 @@ export function subscribeSSE(
   return () => es.close();
 }
 
+// ─── Polling fallback (for SSE gaps caused by HMR / component remounts) ───────
+
+/**
+ * Poll the relay's /mailbox/:agentId/poll endpoint and dispatch any returned
+ * envelopes through the in-process message routing.  Used as a fallback when
+ * the SSE push path misses messages because the EventSource was briefly closed.
+ */
+async function pollMailbox(relayUrl: string, agentId: string): Promise<void> {
+  try {
+    const r = await fetch(`${relayUrl}/mailbox/${agentId}/poll`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!r.ok) return;
+    const body = await r.json() as { messages?: unknown[] };
+    for (const env of body.messages ?? []) {
+      dispatchInbound(env as Envelope);
+    }
+  } catch { /* non-fatal */ }
+}
+
+// ─── In-process message routing (avoids a second SSE connection) ─────────────
+//
+// Dashboard keeps a single SSE open.  runProbe / runTask register per-task
+// handlers here BEFORE sending any envelope so fast responses are never missed.
+
+const taskHandlers = new Map<string, (env: Envelope) => void>();
+
+/**
+ * Register a handler that will be called when an inbound envelope with the
+ * given taskId arrives via the Dashboard's SSE stream.
+ * Returns an unsubscribe function.
+ */
+export function registerTaskHandler(
+  taskId:  string,
+  handler: (env: Envelope) => void,
+): () => void {
+  taskHandlers.set(taskId, handler);
+  return () => taskHandlers.delete(taskId);
+}
+
+/**
+ * Called by Dashboard's SSE onMessage to dispatch inbound envelopes to any
+ * registered per-task handlers.
+ */
+export function dispatchInbound(env: Envelope): void {
+  if (env.taskId) taskHandlers.get(env.taskId)?.(env);
+}
+
 // ─── High-level demo flow ─────────────────────────────────────────────────────
 
 export interface DemoContext {
@@ -221,24 +298,28 @@ export async function buildDemoContext(): Promise<DemoContext> {
 }
 
 export async function runProbe(
-  ctx:         DemoContext,
-  onStep:      (step: FlowStep, log: Omit<LogEntry, "id">) => void,
+  ctx:    DemoContext,
+  onStep: (step: FlowStep, log: Omit<LogEntry, "id">) => void,
 ): Promise<boolean> {
+  // Register remote DID with Relay A (so it can federate to Relay B)
+  await preregisterRemoteDid({
+    relayUrl:       RELAY_A,
+    remoteDid:      ctx.researchDid,
+    remoteRelayUrl: RELAY_B,
+  }).catch(() => {});
+
+  // Register Finance Bot's DID with Relay B so Relay B can route the
+  // PROBE_RESPONSE back via HTTP /inbound instead of direct cross-relay NATS.
+  await preregisterSelfDid({
+    remoteRelayUrl: RELAY_B,
+    selfDid:        ctx.did,
+    homeRelayUrl:   RELAY_A,
+  }).catch(() => {});
+
   const taskId    = uuidv7();
   const messageId = uuidv7();
 
-  onStep("probe_sent", {
-    timestamp: Date.now(),
-    type:      "PROBE",
-    from:      "Finance Bot",
-    to:        "Relay A",
-    taskId,
-    messageId,
-    label:     "PROBE → Relay A",
-    payload:   { capabilityId: "summarize-pdf", parameters: { maxPages: "50" } },
-  });
-
-  const env: Omit<Envelope, "signature"> = {
+  const probeEnv: Omit<Envelope, "signature"> = {
     messageId,
     senderDid:      ctx.did,
     recipientDid:   ctx.researchDid,
@@ -253,54 +334,85 @@ export async function runProbe(
     aampVersion:    "0.1.0",
   };
 
-  await sendEnvelope(RELAY_A, ctx.agentId, env, ctx.keyPair.privateKey);
-
-  onStep("probe_federated", {
-    timestamp: Date.now(),
-    type:      "PROBE",
-    from:      "Relay A",
-    to:        "Relay B",
-    taskId,
-    label:     "Relay A federates → Relay B",
-  });
-
-  onStep("probe_delivered", {
-    timestamp: Date.now(),
-    type:      "PROBE",
-    from:      "Relay B",
-    to:        "Research Bot",
-    taskId,
-    label:     "Relay B → Research Bot (NATS)",
-  });
-
-  // Wait for PROBE_RESPONSE via SSE (returned from subscribeToResponses)
+  // Register handler BEFORE sending so a fast response is never missed.
+  // Dashboard's SSE + polling fallback both dispatch via dispatchInbound().
   return new Promise(resolve => {
-    const timeout = setTimeout(() => resolve(false), 10_000);
-    const unsub = subscribeSSE(RELAY_A, ctx.agentId, env => {
-      if (env.taskId === taskId && env.messageType === "PROBE_RESPONSE") {
-        clearTimeout(timeout);
-        unsub();
-        const accepted = (env.payload as Record<string, unknown>)?.output
-          ? ((env.payload as Record<string, unknown>).output as Record<string, unknown>)?.accepted
-          : (env.payload as Record<string, unknown>)?.accepted;
-        onStep("probe_response", {
-          timestamp: Date.now(),
-          type:      "PROBE_RESPONSE",
-          from:      "Research Bot",
-          to:        "Finance Bot",
-          taskId,
-          label:     `PROBE_RESPONSE — accepted=${String(accepted)}`,
-          payload:   env.payload,
-        });
-        resolve(Boolean(accepted));
-      }
+    let done         = false;
+    let pollId: ReturnType<typeof setInterval> | null = null;
+
+    const cleanup = (timeoutId: ReturnType<typeof setTimeout>) => {
+      done = true;
+      clearTimeout(timeoutId);
+      if (pollId !== null) clearInterval(pollId);
+      unsub();
+    };
+
+    const timeoutId = setTimeout(() => {
+      cleanup(timeoutId);
+      resolve(false);
+    }, 15_000);
+
+    const unsub = registerTaskHandler(taskId, inbound => {
+      if (done || inbound.messageType !== "PROBE_RESPONSE") return;
+      cleanup(timeoutId);
+      const p = inbound.payload as Record<string, unknown> | undefined;
+      const accepted = p?.output
+        ? (p.output as Record<string, unknown>)?.accepted
+        : p?.accepted;
+      onStep("probe_response", {
+        timestamp: Date.now(),
+        type:      "PROBE_RESPONSE",
+        from:      "Research Bot",
+        to:        "Finance Bot",
+        taskId,
+        label:     `PROBE_RESPONSE — accepted=${String(accepted)}`,
+        payload:   inbound.payload,
+      });
+      resolve(Boolean(accepted));
     });
+
+    onStep("probe_sent", {
+      timestamp: Date.now(),
+      type:      "PROBE",
+      from:      "Finance Bot",
+      to:        "Relay A",
+      taskId,
+      messageId,
+      label:     "PROBE → Relay A",
+      payload:   { capabilityId: "summarize-pdf", parameters: { maxPages: "50" } },
+    });
+
+    sendEnvelope(RELAY_A, ctx.agentId, probeEnv, ctx.keyPair.privateKey)
+      .then(() => {
+        onStep("probe_federated", {
+          timestamp: Date.now(),
+          type:      "PROBE",
+          from:      "Relay A",
+          to:        "Relay B",
+          taskId,
+          label:     "Relay A federates → Relay B",
+        });
+        onStep("probe_delivered", {
+          timestamp: Date.now(),
+          type:      "PROBE",
+          from:      "Relay B",
+          to:        "Research Bot",
+          taskId,
+          label:     "Relay B → Research Bot (NATS)",
+        });
+        // Poll as SSE fallback for when the EventSource is briefly closed.
+        pollId = setInterval(() => pollMailbox(RELAY_A, ctx.agentId), 800);
+      })
+      .catch(() => {
+        cleanup(timeoutId);
+        resolve(false);
+      });
   });
 }
 
 export async function runTask(
-  ctx:     DemoContext,
-  onStep:  (step: FlowStep, log: Omit<LogEntry, "id">) => void,
+  ctx:    DemoContext,
+  onStep: (step: FlowStep, log: Omit<LogEntry, "id">) => void,
 ): Promise<unknown> {
   const taskId    = uuidv7();
   const messageId = uuidv7();
@@ -312,18 +424,7 @@ export async function runTask(
     focus:        ["revenue", "expenses", "guidance"],
   };
 
-  onStep("task_sent", {
-    timestamp: Date.now(),
-    type:      "TASK",
-    from:      "Finance Bot",
-    to:        "Relay A",
-    taskId,
-    messageId,
-    label:     "TASK → Relay A (signed + UCAN)",
-    payload:   taskPayload,
-  });
-
-  const env: Omit<Envelope, "signature"> = {
+  const taskEnv: Omit<Envelope, "signature"> = {
     messageId,
     senderDid:      ctx.did,
     recipientDid:   ctx.researchDid,
@@ -338,61 +439,90 @@ export async function runTask(
     aampVersion:    "0.1.0",
   };
 
-  await sendEnvelope(RELAY_A, ctx.agentId, env, ctx.keyPair.privateKey);
-
-  onStep("task_federated", {
-    timestamp: Date.now(),
-    type:      "TASK",
-    from:      "Relay A",
-    to:        "Relay B",
-    taskId,
-    label:     "Relay A federates → Relay B",
-  });
-
-  onStep("task_delivered", {
-    timestamp: Date.now(),
-    type:      "TASK",
-    from:      "Relay B",
-    to:        "Research Bot",
-    taskId,
-    label:     "Relay B → Research Bot (NATS)",
-  });
-
-  onStep("task_processing", {
-    timestamp: Date.now(),
-    type:      "STATUS",
-    from:      "Research Bot",
-    to:        "Research Bot",
-    taskId,
-    label:     "Research Bot processing PDF…",
-  });
-
+  // Register handler BEFORE sending so a fast response is never missed.
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("Task timed out")), 30_000);
-    const unsub = subscribeSSE(RELAY_A, ctx.agentId, env => {
-      if (env.taskId === taskId && env.messageType === "RESPONSE") {
-        clearTimeout(timeout);
-        unsub();
-        onStep("task_response", {
-          timestamp: Date.now(),
-          type:      "RESPONSE",
-          from:      "Research Bot",
-          to:        "Finance Bot",
-          taskId,
-          label:     "RESPONSE ← Research Bot",
-          payload:   env.payload,
-        });
-        onStep("completed", {
-          timestamp: Date.now(),
-          type:      "SYSTEM",
-          from:      "Finance Bot",
-          to:        "Finance Bot",
-          taskId,
-          label:     "Task completed ✓",
-          payload:   env.payload,
-        });
-        resolve(env.payload);
-      }
+    let done         = false;
+    let pollId: ReturnType<typeof setInterval> | null = null;
+
+    const cleanup = (timeoutId: ReturnType<typeof setTimeout>) => {
+      done = true;
+      clearTimeout(timeoutId);
+      if (pollId !== null) clearInterval(pollId);
+      unsub();
+    };
+
+    const timeoutId = setTimeout(() => {
+      cleanup(timeoutId);
+      reject(new Error("Task timed out"));
+    }, 40_000);
+
+    const unsub = registerTaskHandler(taskId, inbound => {
+      if (done || inbound.messageType !== "RESPONSE") return;
+      cleanup(timeoutId);
+      onStep("task_response", {
+        timestamp: Date.now(),
+        type:      "RESPONSE",
+        from:      "Research Bot",
+        to:        "Finance Bot",
+        taskId,
+        label:     "RESPONSE ← Research Bot",
+        payload:   inbound.payload,
+      });
+      onStep("completed", {
+        timestamp: Date.now(),
+        type:      "SYSTEM",
+        from:      "Finance Bot",
+        to:        "Finance Bot",
+        taskId,
+        label:     "Task completed ✓",
+        payload:   inbound.payload,
+      });
+      resolve(inbound.payload);
     });
+
+    onStep("task_sent", {
+      timestamp: Date.now(),
+      type:      "TASK",
+      from:      "Finance Bot",
+      to:        "Relay A",
+      taskId,
+      messageId,
+      label:     "TASK → Relay A (signed + UCAN)",
+      payload:   taskPayload,
+    });
+
+    sendEnvelope(RELAY_A, ctx.agentId, taskEnv, ctx.keyPair.privateKey)
+      .then(() => {
+        onStep("task_federated", {
+          timestamp: Date.now(),
+          type:      "TASK",
+          from:      "Relay A",
+          to:        "Relay B",
+          taskId,
+          label:     "Relay A federates → Relay B",
+        });
+        onStep("task_delivered", {
+          timestamp: Date.now(),
+          type:      "TASK",
+          from:      "Relay B",
+          to:        "Research Bot",
+          taskId,
+          label:     "Relay B → Research Bot (NATS)",
+        });
+        onStep("task_processing", {
+          timestamp: Date.now(),
+          type:      "STATUS",
+          from:      "Research Bot",
+          to:        "Research Bot",
+          taskId,
+          label:     "Research Bot processing PDF…",
+        });
+        // Poll as SSE fallback for when the EventSource is briefly closed.
+        pollId = setInterval(() => pollMailbox(RELAY_A, ctx.agentId), 800);
+      })
+      .catch(err => {
+        cleanup(timeoutId);
+        reject(err);
+      });
   });
 }

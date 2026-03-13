@@ -42,17 +42,17 @@ export function AgentCard({
             {company}
           </p>
           <h2 className="text-lg font-bold text-white mt-0.5">{label}</h2>
-          <p className="text-xs text-zinc-500 mt-0.5">{tech}</p>
+          <p className="text-xs text-zinc-400 mt-0.5">{tech}</p>
         </div>
         <ConnectionBadge connected={agent?.connected ?? false} />
       </div>
 
       {/* DID */}
       <div className="rounded-lg bg-black/30 px-3 py-2 border border-white/5">
-        <p className="text-[10px] uppercase tracking-widest text-zinc-500 mb-1">DID</p>
+        <p className="text-[10px] uppercase tracking-widest text-zinc-400 mb-1">DID</p>
         <p className="font-mono text-xs text-cyan-300 break-all leading-relaxed">
           {agent?.did ? shortDid(agent.did) : (
-            <span className="text-zinc-600 italic">generating…</span>
+            <span className="text-zinc-400 italic">generating…</span>
           )}
         </p>
       </div>
@@ -70,7 +70,7 @@ export function AgentCard({
         <span className="text-xs text-zinc-400">
           {relayLabel}
           {relay.domain && (
-            <span className="ml-1 text-zinc-500">({relay.domain})</span>
+            <span className="ml-1 text-zinc-400">({relay.domain})</span>
           )}
         </span>
       </div>
@@ -107,7 +107,7 @@ function ConnectionBadge({ connected }: { connected: boolean }) {
     );
   }
   return (
-    <span className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-500 bg-zinc-800 border border-zinc-700 px-2 py-0.5 rounded-full">
+    <span className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-400 bg-zinc-800 border border-zinc-700 px-2 py-0.5 rounded-full">
       <WifiOff size={10} />
       Offline
     </span>

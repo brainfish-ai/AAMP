@@ -33,7 +33,7 @@ import {
 import { DIDResolver, verifyEnvelope, publicKeyToMultibase } from "@aamp/identity";
 import type { RelayConfig } from "./config.js";
 import type { NatsContext } from "./nats.js";
-import { publishToMailbox, agentIdFromDid, ensureAgentConsumer } from "./nats.js";
+import { publishToMailbox, agentIdFromDid, ensureAgentConsumer, drainAgentMailbox } from "./nats.js";
 import { FederationRouter } from "./federation.js";
 import { AgentRegistry } from "./registry.js";
 
@@ -161,6 +161,23 @@ export async function buildServer(config: RelayConfig, nats: NatsContext) {
   );
 
   // ─────────────────────────────────────────────────────────────
+  //  GET /mailbox/:agentId/poll — pull pending messages from JetStream
+  //  Allows browser clients to poll for missed messages (SSE fallback).
+  // ─────────────────────────────────────────────────────────────
+
+  fastify.get<{ Params: { agentId: string } }>(
+    "/mailbox/:agentId/poll",
+    async (req, reply) => {
+      const { agentId } = req.params;
+      const messages = await drainAgentMailbox(nats.js, config, agentId);
+      const envelopes = messages
+        .map(raw => { try { return JSON.parse(raw); } catch { return null; } })
+        .filter(Boolean);
+      return reply.send({ messages: envelopes });
+    },
+  );
+
+  // ─────────────────────────────────────────────────────────────
   //  POST /mailbox/:agentId/send — agent deposits a message
   // ─────────────────────────────────────────────────────────────
 
@@ -234,7 +251,10 @@ export async function buildServer(config: RelayConfig, nats: NatsContext) {
       req.raw.on("close", () => {
         const clients = sseClients.get(agentId) ?? [];
         const idx = clients.indexOf(reply);
-        if (idx !== -1) clients.splice(idx, 1);
+        if (idx !== -1) {
+          clients.splice(idx, 1);
+          console.log(`[relay/sse] client disconnected for ${agentId}, remaining: ${clients.length}`);
+        }
       });
 
       // Keep connection alive with a heartbeat every 15 seconds
@@ -243,6 +263,18 @@ export async function buildServer(config: RelayConfig, nats: NatsContext) {
       }, 15_000);
 
       req.raw.on("close", () => clearInterval(heartbeat));
+
+      // Drain any messages that arrived while this SSE was disconnected.
+      // This replays missed envelopes from the JetStream durable consumer.
+      drainAgentMailbox(nats.js, config, agentId).then(msgs => {
+        for (const raw of msgs) {
+          try {
+            const env = JSON.parse(raw) as Record<string, unknown>;
+            console.log(`[relay/sse] replaying missed message for ${agentId}: type=${env.messageType}`);
+            reply.raw.write(`event: message\ndata: ${raw}\n\n`);
+          } catch { /* malformed */ }
+        }
+      }).catch(() => { /* non-fatal */ });
 
       // Do not call reply.send() — SSE stays open
       await new Promise(() => {});
@@ -302,8 +334,11 @@ export async function buildServer(config: RelayConfig, nats: NatsContext) {
       }
     }
 
-    // Route to local agent
-    const localAgentId = agentIdFromDid(envelope.recipientDid, config.domain);
+    // Route to local agent.
+    // Prefer the registry so `did:key:…` DIDs map to their user-friendly agentId
+    // (e.g. "finance-bot-ui") rather than the key-truncation fallback.
+    const reg = registry.get(envelope.recipientDid);
+    const localAgentId = reg?.agentId ?? agentIdFromDid(envelope.recipientDid, config.domain);
     if (!localAgentId) {
       return reply.code(404).send({
         error: `Recipient DID ${envelope.recipientDid} is not local to this relay (domain: ${config.domain})`,
@@ -331,16 +366,16 @@ async function routeEnvelope(
   sseClients: SseClients,
   registry: import("./registry.js").AgentRegistry,
 ): Promise<void> {
-  // Priority 1: If replyToMailbox is a NATS subject (starts with "aamp."), publish directly.
-  // Both relays share NATS, so relay-b can deliver directly to relay-a's agent subjects.
-  // This is how responses cross relay boundaries without needing DID resolution.
-  // Use replyToMailbox for: RESPONSE, PROBE_RESPONSE, STATUS, CONFIRM, CANCEL
+  // Priority 1: If replyToMailbox is a NATS subject for THIS relay's domain, publish directly.
+  // Only use direct NATS for local subjects — cross-relay subjects fall through to DID routing
+  // so the response travels via HTTP /inbound (which also writes to JetStream for durability).
   const isReplyType = envelope.messageType === MessageType.RESPONSE ||
                       envelope.messageType === MessageType.PROBE_RESPONSE ||
                       envelope.messageType === MessageType.STATUS ||
                       envelope.messageType === MessageType.CONFIRM ||
                       envelope.messageType === MessageType.CANCEL;
-  if (envelope.replyToMailbox?.startsWith("aamp.") && isReplyType) {
+  const localMailboxPrefix = `aamp.${config.domain}.`;
+  if (envelope.replyToMailbox?.startsWith(localMailboxPrefix) && isReplyType) {
     const subject = envelope.replyToMailbox;
     const payload = new TextEncoder().encode(JSON.stringify(envelope));
     try {
@@ -408,18 +443,23 @@ async function deliverToAgent(
 function broadcastToSse(sseClients: SseClients, agentId: string, data: unknown): void {
   const clients = sseClients.get(agentId) ?? [];
   const payload = `event: message\ndata: ${JSON.stringify(data)}\n\n`;
+  console.log(`[relay/sse] broadcast to ${agentId}: ${clients.length} client(s), type=${(data as Record<string,unknown>)?.messageType}`);
+  let sent = 0;
   for (const client of clients) {
     try {
       client.raw.write(payload);
+      sent++;
     } catch {
       // Client disconnected
     }
+  }
+  if (sent === 0 && clients.length > 0) {
+    console.warn(`[relay/sse] all ${clients.length} client(s) for ${agentId} appear disconnected`);
   }
 }
 
 /**
  * Subscribe to NATS messages for an agent and bridge them to SSE clients.
- * This creates a durable pull consumer that survives relay restarts.
  */
 function subscribeNatsToSse(
   nats: NatsContext,
@@ -428,6 +468,7 @@ function subscribeNatsToSse(
   sseClients: SseClients,
 ): void {
   const subject = `aamp.${config.domain}.${agentId}.inbox`;
+  console.log(`[relay/sse] subscribing NATS→SSE for ${agentId} on ${subject}`);
 
   // Subscribe to NATS core (non-persistent) for real-time bridging
   const sub = nats.nc.subscribe(subject);
@@ -435,7 +476,8 @@ function subscribeNatsToSse(
     for await (const msg of sub) {
       const payload = new TextDecoder().decode(msg.data);
       try {
-        const envelope = JSON.parse(payload);
+        const envelope = JSON.parse(payload) as Record<string, unknown>;
+        console.log(`[relay/sse] NATS→SSE received for ${agentId}: type=${envelope.messageType} taskId=${envelope.taskId}`);
         broadcastToSse(sseClients, agentId, envelope);
       } catch {
         // Malformed message

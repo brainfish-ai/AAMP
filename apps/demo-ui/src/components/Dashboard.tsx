@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Play, RotateCcw, Zap, Github } from "lucide-react";
+import { Play, RotateCcw, Github } from "lucide-react";
 import { AgentCard }   from "./AgentCard";
 import { FlowDiagram } from "./FlowDiagram";
 import { EventLog }    from "./EventLog";
@@ -11,6 +11,7 @@ import {
   registerAgent,
   preregisterRemoteDid,
   subscribeSSE,
+  dispatchInbound,
   runProbe,
   runTask,
   checkRelayHealth,
@@ -110,8 +111,11 @@ export function Dashboard() {
           domain:    ctx.domain,
         });
 
-        // Open SSE for incoming messages
+        // Open SSE for incoming messages.
+        // Also dispatch to any per-task handlers registered by runProbe/runTask
+        // so they receive responses without needing a second SSE connection.
         unsubRef.current = subscribeSSE(RELAY_A, ctx.agentId, env => {
+          dispatchInbound(env);
           addLog({
             timestamp: Date.now(),
             type:      env.messageType,
@@ -195,12 +199,9 @@ export function Dashboard() {
       <header className="border-b border-white/10 bg-black/40 backdrop-blur-md sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
-              <Zap size={16} className="text-white" />
-            </div>
             <div>
               <h1 className="text-sm font-bold tracking-tight text-white">AAMP</h1>
-              <p className="text-[10px] text-zinc-500 leading-none">Agent-to-Agent Messaging Protocol</p>
+              <p className="text-[10px] text-zinc-400 leading-none">Agent-to-Agent Messaging Protocol</p>
             </div>
           </div>
 
@@ -300,13 +301,13 @@ export function Dashboard() {
                 <div className="grid gap-4 sm:grid-cols-2">
                   {out.summary && (
                     <div className="rounded-xl bg-black/30 p-4 border border-white/5 sm:col-span-2">
-                      <p className="text-[10px] uppercase tracking-widest text-zinc-500 mb-2">Summary</p>
+                      <p className="text-[10px] uppercase tracking-widest text-zinc-400 mb-2">Summary</p>
                       <p className="text-sm text-zinc-200 leading-relaxed">{String(out.summary)}</p>
                     </div>
                   )}
                   {Array.isArray(out.keyPoints) && (
                     <div className="rounded-xl bg-black/30 p-4 border border-white/5">
-                      <p className="text-[10px] uppercase tracking-widest text-zinc-500 mb-2">Key Points</p>
+                      <p className="text-[10px] uppercase tracking-widest text-zinc-400 mb-2">Key Points</p>
                       <ul className="space-y-1.5">
                         {(out.keyPoints as string[]).map((pt, i) => (
                           <li key={i} className="flex items-start gap-2 text-sm text-zinc-300">
@@ -319,7 +320,7 @@ export function Dashboard() {
                   )}
                   {out.agentDid && (
                     <div className="rounded-xl bg-black/30 p-4 border border-white/5">
-                      <p className="text-[10px] uppercase tracking-widest text-zinc-500 mb-2">Processed By</p>
+                      <p className="text-[10px] uppercase tracking-widest text-zinc-400 mb-2">Processed By</p>
                       <p className="font-mono text-xs text-violet-300 break-all">{String(out.agentDid)}</p>
                     </div>
                   )}
@@ -351,7 +352,7 @@ function RelayBadge({ label, url, health }: { label: string; url: string; health
         }
       />
       <span className="text-zinc-400">{label}</span>
-      <span className="text-zinc-600 text-[10px]">{url.replace("http://", "")}</span>
+      <span className="text-zinc-400 text-[10px]">{url.replace("http://", "")}</span>
     </div>
   );
 }

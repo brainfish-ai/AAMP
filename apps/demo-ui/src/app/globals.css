@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+/* AAMP flow diagram — traveling packet animation */
+@keyframes aamp-flow {
+  from { stroke-dashoffset: 100; }
+  to   { stroke-dashoffset: 0;   }
+}
+
+/* JetStream bus activity bars */
+@keyframes aamp-bar {
+  from { transform: scaleY(0.3); }
+  to   { transform: scaleY(1);   }
+}
+
 /* React Flow overrides — keep the canvas transparent */
 .react-flow__renderer {
   background: transparent;

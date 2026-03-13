@@ -90,6 +90,34 @@ export async function ensureAgentConsumer(
 }
 
 /**
+ * Pull and return any messages pending in the agent's durable JetStream consumer.
+ * Called when a new SSE connection opens so missed messages are replayed immediately.
+ * Uses nats.js v2 JetStreamClient.fetch() API.
+ */
+export async function drainAgentMailbox(
+  js:      JetStreamClient,
+  config:  RelayConfig,
+  agentId: string,
+): Promise<string[]> {
+  const consumerName = `agent-${agentId}`;
+  const results: string[] = [];
+  try {
+    // Check if consumer has pending messages first
+    const iter = js.fetch(config.streamName, consumerName, {
+      batch:   50,
+      expires: 500,  // 500 ms timeout
+    });
+    for await (const msg of iter) {
+      results.push(new TextDecoder().decode(msg.data));
+      msg.ack();
+    }
+  } catch {
+    // Consumer may not exist yet or stream empty — non-fatal
+  }
+  return results;
+}
+
+/**
  * Publish an envelope to an agent's inbox subject.
  */
 export async function publishToMailbox(

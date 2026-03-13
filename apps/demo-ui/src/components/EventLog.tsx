@@ -31,7 +31,7 @@ function LogRow({ entry }: { entry: LogEntry }) {
         onClick={() => hasPayload && setOpen(o => !o)}
       >
         {/* Expand arrow */}
-        <span className="shrink-0 text-zinc-600 w-3">
+        <span className="shrink-0 text-zinc-400 w-3">
           {hasPayload
             ? open
               ? <ChevronDown size={12} />
@@ -40,7 +40,7 @@ function LogRow({ entry }: { entry: LogEntry }) {
         </span>
 
         {/* Timestamp */}
-        <span className="shrink-0 font-mono text-[10px] text-zinc-600 w-24">
+        <span className="shrink-0 font-mono text-[10px] text-zinc-400 w-24">
           {formatTimestamp(entry.timestamp)}
         </span>
 
@@ -57,7 +57,7 @@ function LogRow({ entry }: { entry: LogEntry }) {
         {/* From → To */}
         <span className="shrink-0 text-xs text-zinc-400 w-48 truncate">
           <span className="text-zinc-300">{entry.from}</span>
-          <span className="text-zinc-600 mx-1">→</span>
+          <span className="text-zinc-400 mx-1">→</span>
           <span className="text-zinc-300">{entry.to}</span>
         </span>
 
@@ -66,7 +66,7 @@ function LogRow({ entry }: { entry: LogEntry }) {
 
         {/* Task ID */}
         {entry.taskId && (
-          <span className="shrink-0 font-mono text-[10px] text-zinc-600 hidden xl:block">
+          <span className="shrink-0 font-mono text-[10px] text-zinc-400 hidden xl:block">
             {entry.taskId.slice(0, 8)}…
           </span>
         )}
@@ -99,22 +99,22 @@ export function EventLog({ entries }: Props) {
             Event Log
           </span>
         </div>
-        <span className="text-[10px] text-zinc-500">{entries.length} events</span>
+        <span className="text-[10px] text-zinc-400">{entries.length} events</span>
       </div>
 
       {/* Column headers */}
       <div className="flex items-center gap-3 px-4 py-1.5 border-b border-white/5 bg-white/[0.01]">
         <span className="w-3" />
-        <span className="text-[9px] uppercase tracking-widest text-zinc-600 w-24">Time</span>
-        <span className="text-[9px] uppercase tracking-widest text-zinc-600 w-28">Type</span>
-        <span className="text-[9px] uppercase tracking-widest text-zinc-600 w-48">From → To</span>
-        <span className="text-[9px] uppercase tracking-widest text-zinc-600 flex-1">Description</span>
+        <span className="text-[9px] uppercase tracking-widest text-zinc-400 w-24">Time</span>
+        <span className="text-[9px] uppercase tracking-widest text-zinc-400 w-28">Type</span>
+        <span className="text-[9px] uppercase tracking-widest text-zinc-400 w-48">From → To</span>
+        <span className="text-[9px] uppercase tracking-widest text-zinc-400 flex-1">Description</span>
       </div>
 
       {/* Rows */}
       <div className="overflow-y-auto max-h-72 flex-1">
         {entries.length === 0 ? (
-          <div className="flex items-center justify-center h-24 text-zinc-600 text-sm">
+          <div className="flex items-center justify-center h-24 text-zinc-400 text-sm">
             No events yet — run the demo to see messages flow
           </div>
         ) : (
