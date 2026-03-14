@@ -1,132 +1,171 @@
 /**
  * POST /api/demo/start
  *
- * Spins up two Cloudflare Sandboxes:
- *   - Sandbox A: Finance Agent (Company A) — Node.js
- *   - Sandbox B: Research Agent (Company B) — Python
+ * Spins up two Vercel Sandboxes to run the real agent code:
+ *   - Sandbox A: Finance Agent (Company A) — node22 runtime
+ *   - Sandbox B: Research Agent (Company B) — python3.13 runtime
  *
- * Both agents are injected with the deployed relay URLs and Synadia NATS URL.
- * They communicate ONLY through the AAMP relay Workers — never directly.
+ * Both sandboxes clone the AAMP repo, install dependencies, and run
+ * their respective agents. They communicate ONLY through the deployed
+ * Cloudflare relay Workers — zero direct contact between sandboxes.
  *
- * Returns a sessionId that the client uses to stream events from
- * GET /api/demo/stream?sessionId=<id>
+ * Snapshot caching: after the first run, snapshots of the pre-built
+ * sandbox states are saved. Subsequent demo runs restore from those
+ * snapshots, skipping the slow pnpm install + build step.
+ *
+ * Returns { sessionId } — used by GET /api/demo/stream to tail events.
  */
 
 import { type NextRequest, NextResponse } from "next/server";
-import { getRequestContext } from "@cloudflare/next-on-pages";
-import { getSandbox } from "@cloudflare/sandbox";
+import { Sandbox } from "@vercel/sandbox";
 
-export const runtime = "edge";
+export const maxDuration = 120;
 
-interface DemoEnv {
-  SANDBOX:        DurableObjectNamespace;
-  RELAY_A_URL:    string;
-  RELAY_B_URL:    string;
-  NATS_URL:       string;
-  FINANCE_IMAGE?: string;   // optional pre-built Docker image tag
-  RESEARCH_IMAGE?: string;  // optional pre-built Docker image tag
-}
-
-// In-process event buffer shared with the /stream route (same Worker instance).
-// Key: sessionId, Value: array of log lines waiting to be streamed.
+// In-process session state shared with /api/demo/stream (same serverless instance).
+// For production scale, back this with Vercel KV instead.
 export const sessionLogs = new Map<string, string[]>();
 export const sessionDone = new Map<string, boolean>();
 
 export async function POST(_req: NextRequest): Promise<NextResponse> {
-  const { env } = getRequestContext<DemoEnv>();
-
   const sessionId = crypto.randomUUID();
   sessionLogs.set(sessionId, []);
   sessionDone.set(sessionId, false);
 
-  const relayAUrl    = env.RELAY_A_URL    ?? "https://aamp-relay-a.workers.dev";
-  const relayBUrl    = env.RELAY_B_URL    ?? "https://aamp-relay-b.workers.dev";
-  const natsUrl      = env.NATS_URL       ?? "";
-  const financeImage  = env.FINANCE_IMAGE  ?? "aampproject/finance-agent:latest";
-  const researchImage = env.RESEARCH_IMAGE ?? "aampproject/research-agent:latest";
-
-  // Fire-and-forget: run both sandboxes concurrently; stream logs to sessionLogs
-  runDemo({ env, sessionId, relayAUrl, relayBUrl, natsUrl, financeImage, researchImage }).catch(err => {
-    const logs = sessionLogs.get(sessionId) ?? [];
-    logs.push(`[error] ${String(err)}`);
+  // Fire and forget — stream route polls sessionLogs independently
+  runDemo(sessionId).catch(err => {
+    sessionLogs.get(sessionId)?.push(`[error] ${String(err)}`);
     sessionDone.set(sessionId, true);
   });
 
   return NextResponse.json({ sessionId });
 }
 
-async function runDemo(opts: {
-  env:           DemoEnv;
-  sessionId:     string;
-  relayAUrl:     string;
-  relayBUrl:     string;
-  natsUrl:       string;
-  financeImage:  string;
-  researchImage: string;
-}): Promise<void> {
-  const { env, sessionId, relayAUrl, relayBUrl, natsUrl, financeImage, researchImage } = opts;
-
+async function runDemo(sessionId: string): Promise<void> {
   function log(line: string): void {
-    const logs = sessionLogs.get(sessionId);
-    if (logs) logs.push(line);
+    sessionLogs.get(sessionId)?.push(line);
   }
 
+  const relayAUrl    = process.env.RELAY_A_URL    ?? "https://aamp-relay-a.workers.dev";
+  const relayBUrl    = process.env.RELAY_B_URL    ?? "https://aamp-relay-b.workers.dev";
+  const natsUrl      = process.env.NATS_URL       ?? "";
+  const repoUrl      = process.env.REPO_URL       ?? "";
+  const snapFinance  = process.env.VERCEL_SNAPSHOT_FINANCE;
+  const snapResearch = process.env.VERCEL_SNAPSHOT_RESEARCH;
+
+  let financeBox:  Sandbox | null = null;
+  let researchBox: Sandbox | null = null;
+
   try {
-    log("[system] Starting Cloudflare Sandboxes...");
+    log("[system] Creating Vercel Sandboxes...");
 
-    const financeBox  = getSandbox(env.SANDBOX, `finance-${sessionId}`);
-    const researchBox = getSandbox(env.SANDBOX, `research-${sessionId}`);
+    // ── Research Agent sandbox (Company B) ────────────────────────────────
+    // Start first so it's listening before the finance agent probes.
+    log("[system] Booting Research Agent sandbox (python3.13, Company B)...");
 
-    // ── Launch both sandboxes concurrently ──────────────────────
+    researchBox = await Sandbox.create(
+      snapResearch
+        ? { source: { type: "snapshot", snapshotId: snapResearch }, timeout: 120_000,
+            env: { RELAY_B_URL: relayBUrl, NATS_URL: natsUrl,
+                   RELAY_DOMAIN: "company-b.aamp.workers.dev", AGENT_ID: "research-bot-01" } }
+        : { runtime: "python3.13",
+            source: repoUrl ? { type: "git", url: repoUrl } : undefined,
+            timeout: 120_000,
+            env: { RELAY_B_URL: relayBUrl, NATS_URL: natsUrl,
+                   RELAY_DOMAIN: "company-b.aamp.workers.dev", AGENT_ID: "research-bot-01" } },
+    );
+
+    if (!snapResearch) {
+      log("[research-agent] Installing Python dependencies...");
+      await researchBox.runCommand("pip", [
+        "install", "--quiet",
+        "-r", "packages/sdk-py/requirements.txt",
+        "-r", "examples/research-agent/requirements.txt",
+      ]);
+    }
+
+    // Start research agent detached — it listens indefinitely for tasks
+    const researchCmd = await researchBox.runCommand({
+      cmd:      "python",
+      args:     ["examples/research-agent/main.py"],
+      cwd:      "/vercel/sandbox",
+      detached: true,
+    });
+
+    log("[research-agent] Ready. Listening for PROBE/TASK messages...");
+
+    // Give the research agent a head start before finance agent probes
+    await sleep(3_000);
+
+    // ── Finance Agent sandbox (Company A) ─────────────────────────────────
+    log("[system] Booting Finance Agent sandbox (node22, Company A)...");
+
+    financeBox = await Sandbox.create(
+      snapFinance
+        ? { source: { type: "snapshot", snapshotId: snapFinance }, timeout: 120_000,
+            env: { RELAY_A_URL: relayAUrl, RELAY_B_URL: relayBUrl, NATS_URL: natsUrl } }
+        : { runtime: "node22",
+            source: repoUrl ? { type: "git", url: repoUrl } : undefined,
+            timeout: 120_000,
+            env: { RELAY_A_URL: relayAUrl, RELAY_B_URL: relayBUrl, NATS_URL: natsUrl } },
+    );
+
+    if (!snapFinance) {
+      log("[finance-agent] Installing dependencies (pnpm)...");
+      await financeBox.runCommand("corepack", ["enable"]);
+      await financeBox.runCommand("pnpm", ["install", "--frozen-lockfile"]);
+
+      log("[finance-agent] Building packages...");
+      await financeBox.runCommand("pnpm", ["--filter", "@aamp/core",     "build"]);
+      await financeBox.runCommand("pnpm", ["--filter", "@aamp/identity", "build"]);
+      await financeBox.runCommand("pnpm", ["--filter", "@aamp/sdk",      "build"]);
+      await financeBox.runCommand("pnpm", ["--filter", "@aamp/example-finance-agent", "build"]);
+    }
+
+    log("[system] Both agents ready. Starting AAMP protocol flow...");
+
+    // Run the finance agent (probe → task → response → exit)
+    const financeCmd = await financeBox.runCommand({
+      cmd:      "node",
+      args:     ["examples/finance-agent/dist/index.js"],
+      cwd:      "/vercel/sandbox",
+      detached: true,
+    });
+
+    // Stream logs from both agents concurrently into sessionLogs
     await Promise.all([
-      (async () => {
-        log("[system] Finance Agent sandbox starting (Company A)...");
-        const result = await financeBox.exec(
-          "node /app/examples/finance-agent/dist/index.js",
-          {
-            image: financeImage,
-            env: {
-              RELAY_A_URL:       relayAUrl,
-              RELAY_B_URL:       relayBUrl,
-              NATS_URL:          natsUrl,
-              RESEARCH_AGENT_ID: "research-bot-01",
-            },
-            timeout: 120_000,
-          },
-        );
-        for (const line of result.stdout.split("\n").filter(Boolean)) {
-          log(line);
-        }
-        if (result.exitCode !== 0) {
-          log(`[finance-agent] exited with code ${result.exitCode}`);
-        }
-      })(),
-
-      (async () => {
-        log("[system] Research Agent sandbox starting (Company B)...");
-        // Give research agent a head start so it's listening before finance agent probes
-        await sleep(2_000);
-        const result = await researchBox.exec(
-          "python /app/main.py",
-          {
-            image: researchImage,
-            env: {
-              RELAY_B_URL:   relayBUrl,
-              NATS_URL:      natsUrl,
-              RELAY_DOMAIN:  "company-b.aamp.workers.dev",
-              AGENT_ID:      "research-bot-01",
-            },
-            timeout: 120_000,
-          },
-        );
-        for (const line of result.stdout.split("\n").filter(Boolean)) {
-          log(line);
-        }
-      })(),
+      streamLogs(financeCmd,  log),
+      streamLogs(researchCmd, log),
     ]);
+
+    // On first run (no snapshots yet), create them for fast subsequent runs
+    if (!snapFinance || !snapResearch) {
+      log("[system] Creating snapshots for faster future runs...");
+      await Promise.allSettled([
+        financeBox.snapshot().then(s  => log(`[system] Finance snapshot: ${s.snapshotId}`)).catch(() => {}),
+        researchBox.snapshot().then(s => log(`[system] Research snapshot: ${s.snapshotId}`)).catch(() => {}),
+      ]);
+    }
   } finally {
-    log("[system] Demo complete.");
+    log("[system] Demo complete. Stopping sandboxes...");
+    await Promise.allSettled([
+      financeBox?.stop(),
+      researchBox?.stop(),
+    ]);
     sessionDone.set(sessionId, true);
+  }
+}
+
+async function streamLogs(
+  command: Awaited<ReturnType<Sandbox["runCommand"]>>,
+  log: (line: string) => void,
+): Promise<void> {
+  try {
+    for await (const entry of command.logs()) {
+      const line = entry.data.trimEnd();
+      if (line) log(line);
+    }
+  } catch {
+    // Sandbox stopped or stream ended — non-fatal
   }
 }
 

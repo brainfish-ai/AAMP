@@ -1,0 +1,12 @@
+{
+  "framework": "nextjs",
+  "functions": {
+    "src/app/api/demo/start/route.ts": { "maxDuration": 120 },
+    "src/app/api/demo/stream/route.ts": { "maxDuration": 120 }
+  },
+  "env": {
+    "RELAY_A_URL":   { "value": "https://aamp-relay-a.YOUR_SUBDOMAIN.workers.dev" },
+    "RELAY_B_URL":   { "value": "https://aamp-relay-b.YOUR_SUBDOMAIN.workers.dev" },
+    "REPO_URL":      { "value": "https://github.com/your-org/aamp" }
+  }
+}

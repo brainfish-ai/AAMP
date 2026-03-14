@@ -6,14 +6,12 @@
   "scripts": {
     "dev": "next dev --turbopack --port 3001",
     "build": "next build",
-    "build:cf": "next build && npx @cloudflare/next-on-pages",
-    "pages:deploy": "wrangler pages deploy .vercel/output/static",
+    "deploy": "vercel deploy --prod",
     "start": "next start --port 3001",
     "lint": "next lint"
   },
   "dependencies": {
-    "@cloudflare/next-on-pages": "^1.13.7",
-    "@cloudflare/sandbox": "^0.1.0",
+    "@vercel/sandbox": "^1.8.1",
     "@xyflow/react": "^12.10.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -30,6 +28,6 @@
     "@types/react-dom": "^19.0.0",
     "tailwindcss": "^4.2.1",
     "typescript": "^5.8.2",
-    "wrangler": "^3.101.0"
+    "vercel": "^41.0.0"
   }
 }

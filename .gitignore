@@ -15,3 +15,5 @@ venv/
 .DS_Store
 *.log
 nats-data/
+.env.deploy
+.env.*.local
