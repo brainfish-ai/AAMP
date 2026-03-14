@@ -1,220 +1,233 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Play, RotateCcw, Github } from "lucide-react";
+import { Play, RotateCcw, Github, Terminal } from "lucide-react";
 import { AgentCard }   from "./AgentCard";
 import { FlowDiagram } from "./FlowDiagram";
 import { EventLog }    from "./EventLog";
 import type { AgentState, FlowStep, LogEntry, RelayHealth } from "@/lib/types";
-import {
-  buildDemoContext,
-  registerAgent,
-  preregisterRemoteDid,
-  subscribeSSE,
-  dispatchInbound,
-  runProbe,
-  runTask,
-  checkRelayHealth,
-  type DemoContext,
-} from "@/lib/aamp-client";
+import { checkRelayHealth } from "@/lib/aamp-client";
+import { cn } from "@/lib/utils";
 
 const RELAY_A = process.env.NEXT_PUBLIC_RELAY_A_URL ?? "http://localhost:8085";
 const RELAY_B = process.env.NEXT_PUBLIC_RELAY_B_URL ?? "http://localhost:8086";
 
-function uid() {
-  return Math.random().toString(36).slice(2, 10);
+function uid() { return Math.random().toString(36).slice(2, 10); }
+
+// ─── Parse a raw sandbox stdout line into a log entry ────────────────────────
+
+function parseLine(raw: string): Omit<LogEntry, "id"> {
+  const line = raw.replace(/^\[(\d{4}-\d{2}-\d{2}[T ][^\]]*)\]\s*/, ""); // strip timestamp prefix
+
+  let from = "System";
+  let to   = "—";
+  let type: LogEntry["type"] = "SYSTEM";
+
+  if (raw.includes("[finance-agent]"))   { from = "Finance Bot";    to = "Relay A";      }
+  else if (raw.includes("[research-agent]")) { from = "Research Bot"; to = "Relay B";    }
+  else if (raw.includes("[compliance-agent]")) { from = "Compliance Bot"; to = "Relay C"; }
+  else if (raw.includes("[compliance-relay]") || raw.includes("[relay-node]")) {
+    from = "Relay C"; to = "—";
+  }
+  else if (raw.includes("[nats]")) { from = "NATS"; to = "—"; }
+
+  if (raw.includes("[error]") || raw.toLowerCase().includes("fatal") || raw.toLowerCase().includes("error")) {
+    type = "ERROR";
+  } else if (raw.includes("PROBE"))    { type = "PROBE"; }
+  else if (raw.includes("RESPONSE"))   { type = "RESPONSE"; }
+  else if (raw.includes("TASK") || raw.includes("task")) { type = "TASK"; }
+
+  return {
+    timestamp: Date.now(),
+    type,
+    from,
+    to,
+    label: line.replace(/^\[[^\]]+\]\s*/, "").slice(0, 160),
+  };
 }
 
-export function Dashboard() {
-  const [step,       setStep]       = useState<FlowStep>("idle");
-  const [log,        setLog]        = useState<LogEntry[]>([]);
-  const [financeAgent, setFinance]  = useState<AgentState | null>(null);
-  const [relayA,     setRelayA]     = useState<RelayHealth>({ status: "checking" });
-  const [relayB,     setRelayB]     = useState<RelayHealth>({ status: "checking" });
-  const [running,    setRunning]    = useState(false);
-  const [result,     setResult]     = useState<Record<string, unknown> | null>(null);
-  const [error,      setError]      = useState<string | null>(null);
+// ─── Dashboard ────────────────────────────────────────────────────────────────
 
-  const ctxRef   = useRef<DemoContext | null>(null);
-  const unsubRef = useRef<(() => void) | null>(null);
+export function Dashboard() {
+  const [step,    setStep]    = useState<FlowStep>("idle");
+  const [log,     setLog]     = useState<LogEntry[]>([]);
+  const [relayA,  setRelayA]  = useState<RelayHealth>({ status: "checking" });
+  const [relayB,  setRelayB]  = useState<RelayHealth>({ status: "checking" });
+  const [relayC,  setRelayC]  = useState<RelayHealth>({ status: "checking" });
+  const [running, setRunning] = useState(false);
+  const [error,   setError]   = useState<string | null>(null);
+  const [rawLogs, setRawLogs] = useState<string[]>([]);
+  const [showRaw, setShowRaw] = useState(false);
+  const sseRef    = useRef<EventSource | null>(null);
+  const rawEndRef = useRef<HTMLDivElement | null>(null);
 
   const addLog = useCallback((entry: Omit<LogEntry, "id">) => {
     setLog(prev => [...prev, { ...entry, id: uid() }]);
   }, []);
 
-  const onStep = useCallback((s: FlowStep, entry: Omit<LogEntry, "id">) => {
-    setStep(s);
-    addLog(entry);
-  }, [addLog]);
-
-  // ── Health checks ───────────────────────────────────────────────────────────
-
+  // ── Health checks (Relay A & B are static CF Workers) ──────────────────────
   useEffect(() => {
     const check = async () => {
       try {
         const h = await checkRelayHealth(RELAY_A);
         setRelayA({ status: "ok", domain: h.domain, uptime: h.uptime });
-      } catch {
-        setRelayA({ status: "error" });
-      }
+      } catch { setRelayA({ status: "error" }); }
       try {
         const h = await checkRelayHealth(RELAY_B);
         setRelayB({ status: "ok", domain: h.domain, uptime: h.uptime });
-      } catch {
-        setRelayB({ status: "error" });
-      }
+      } catch { setRelayB({ status: "error" }); }
     };
     check();
-    const id = setInterval(check, 10_000);
+    const id = setInterval(check, 15_000);
     return () => clearInterval(id);
   }, []);
 
-  // ── Auto-init Finance Agent on mount ────────────────────────────────────────
-
+  // Relay C is ephemeral — show ok when compliance sandbox is active
   useEffect(() => {
-    let cancelled = false;
-    const init = async () => {
-      try {
-        setStep("registering");
-        addLog({ timestamp: Date.now(), type: "SYSTEM", from: "Browser", to: "Relay A", label: "Generating Ed25519 keypair…" });
+    const complianceActive = [
+      "compliance_probing", "compliance_probe_response",
+      "compliance_task_sent", "compliance_processing",
+      "compliance_done", "completed",
+    ].includes(step);
+    setRelayC(complianceActive
+      ? { status: "ok", domain: "company-c.sandbox" }
+      : running ? { status: "checking" } : { status: "checking" });
+  }, [step, running]);
 
-        const ctx = await buildDemoContext();
-        if (cancelled) return;
-        ctxRef.current = ctx;
-
-        addLog({ timestamp: Date.now(), type: "SYSTEM", from: "Browser", to: "Relay A", label: `DID created: ${ctx.did.slice(0, 30)}…` });
-
-        await registerAgent({
-          relayUrl:     RELAY_A,
-          agentId:      ctx.agentId,
-          did:          ctx.did,
-          domain:       ctx.domain,
-          publicKeyB64: ctx.publicKeyB64,
-          name:         "Finance Bot (Demo UI)",
-          capabilities: [],
-        });
-
-        if (cancelled) return;
-
-        // Pre-register Research Bot's DID doc so Relay A can federate
-        await preregisterRemoteDid({
-          relayUrl:       RELAY_A,
-          remoteDid:      ctx.researchDid,
-          remoteRelayUrl: RELAY_B,
-        });
-
-        setFinance({
-          did:       ctx.did,
-          agentId:   ctx.agentId,
-          connected: true,
-          relay:     RELAY_A,
-          domain:    ctx.domain,
-        });
-
-        // Open SSE for incoming messages.
-        // Also dispatch to any per-task handlers registered by runProbe/runTask
-        // so they receive responses without needing a second SSE connection.
-        unsubRef.current = subscribeSSE(RELAY_A, ctx.agentId, env => {
-          dispatchInbound(env);
-          addLog({
-            timestamp: Date.now(),
-            type:      env.messageType,
-            from:      "Research Bot",
-            to:        "Finance Bot",
-            taskId:    env.taskId,
-            messageId: env.messageId,
-            label:     `Inbound: ${env.messageType}`,
-            payload:   env.payload,
-          });
-        });
-
-        addLog({ timestamp: Date.now(), type: "SYSTEM", from: "Relay A", to: "Finance Bot", label: "Agent registered · SSE stream open" });
-        setStep("idle");
-      } catch (e) {
-        if (cancelled) return;
-        setStep("error");
-        setError(String(e));
-        addLog({ timestamp: Date.now(), type: "ERROR", from: "System", to: "System", label: `Init failed: ${String(e)}` });
-      }
-    };
-    init();
-    return () => {
-      cancelled = true;
-      unsubRef.current?.();
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // ── Run full demo ────────────────────────────────────────────────────────────
-
+  // ── Run Full Demo (server-side Vercel Sandboxes) ─────────────────────────
   const runDemo = useCallback(async () => {
-    const ctx = ctxRef.current;
-    if (!ctx || running) return;
+    if (running) return;
     setRunning(true);
     setError(null);
-    setResult(null);
+    setLog([]);
+    setRawLogs([]);
+    setStep("registering");
+    sseRef.current?.close();
 
     try {
-      // Probe
-      onStep("probing", { timestamp: Date.now(), type: "SYSTEM", from: "Finance Bot", to: "Research Bot", label: "Starting PROBE negotiation…" });
-      const accepted = await runProbe(ctx, onStep);
+      const res = await fetch("/api/demo/start", { method: "POST" });
+      if (!res.ok) throw new Error(`Failed to start demo: ${res.statusText}`);
+      const { sessionId } = await res.json() as { sessionId: string };
 
-      if (!accepted) {
-        onStep("error", { timestamp: Date.now(), type: "ERROR", from: "Relay", to: "Finance Bot", label: "PROBE rejected or timed out" });
-        setError("Probe was rejected or timed out. Is the Research Agent running?");
-        return;
-      }
+      addLog({ timestamp: Date.now(), type: "SYSTEM", from: "System", to: "Vercel", label: `Demo session started — booting 3 Vercel Sandboxes (sessionId: ${sessionId})` });
 
-      // Task
-      const taskResult = await runTask(ctx, onStep);
-      setResult((taskResult as Record<string, unknown>) ?? null);
+      const es = new EventSource(`/api/demo/stream?sessionId=${sessionId}`);
+      sseRef.current = es;
+
+      es.addEventListener("connected", () => {
+        addLog({ timestamp: Date.now(), type: "SYSTEM", from: "Stream", to: "UI", label: "SSE stream connected — waiting for sandbox output…" });
+      });
+
+      es.addEventListener("log", (e: MessageEvent) => {
+        const { line } = JSON.parse(e.data) as { line: string };
+        if (!line.trim()) return;
+        setRawLogs(prev => [...prev, line]);
+        setLog(prev => [...prev, { ...parseLine(line), id: uid() }]);
+      });
+
+      es.addEventListener("step", (e: MessageEvent) => {
+        const { step: s } = JSON.parse(e.data) as { step: string };
+        setStep(s as FlowStep);
+      });
+
+      es.addEventListener("done", () => {
+        setRunning(false);
+        setStep(prev =>
+          ["compliance_done", "completed"].includes(prev) ? "completed" : prev === "idle" ? "completed" : prev
+        );
+        addLog({ timestamp: Date.now(), type: "SYSTEM", from: "System", to: "UI", label: "✓ Demo complete — all sandboxes stopped" });
+        es.close();
+      });
+
+      es.addEventListener("error", (e: MessageEvent) => {
+        const msg = e.data ? (JSON.parse(e.data) as { message: string }).message : "Stream error";
+        setError(msg);
+        setRunning(false);
+        setStep("error");
+        es.close();
+      });
+
+      es.onerror = () => {
+        if (running) {
+          setRunning(false);
+          setStep("error");
+          setError("SSE connection lost");
+        }
+        es.close();
+      };
     } catch (e) {
+      setRunning(false);
       setStep("error");
       setError(String(e));
-      addLog({ timestamp: Date.now(), type: "ERROR", from: "System", to: "System", label: `Demo failed: ${String(e)}` });
-    } finally {
-      setRunning(false);
     }
-  }, [running, onStep, addLog]);
+  }, [running, addLog]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const reset = useCallback(() => {
+    sseRef.current?.close();
     setStep("idle");
     setLog([]);
-    setResult(null);
+    setRawLogs([]);
     setError(null);
     setRunning(false);
+    setRelayC({ status: "checking" });
   }, []);
 
-  const researchAgentState: AgentState = {
-    did:       `did:web:company-b.local:agents:research-bot-01`,
+  useEffect(() => () => sseRef.current?.close(), []);
+
+  // Auto-scroll raw log
+  useEffect(() => {
+    rawEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [rawLogs]);
+
+  // ── Derive agent connection state from flow step ──────────────────────────
+  const financeActive = ["probing","probe_sent","probe_federated","probe_delivered","probe_response",
+    "task_sent","task_federated","task_delivered","task_processing","task_response","research_done",
+    "compliance_probing","compliance_probe_response","compliance_task_sent","compliance_done","completed"].includes(step);
+
+  const researchActive = ["probe_delivered","probe_response","task_delivered","task_processing","task_response","research_done"].includes(step);
+
+  const complianceActive = ["compliance_probe_response","compliance_task_sent","compliance_processing","compliance_done","completed"].includes(step);
+
+  const financeAgent: AgentState = {
+    did:       running || step !== "idle" ? "did:key:…(sandbox)" : "—",
+    agentId:   "finance-bot-01",
+    connected: relayA.status === "ok" && (running || financeActive),
+    relay:     RELAY_A,
+    domain:    "company-a.aamp",
+  };
+
+  const researchAgent: AgentState = {
+    did:       `did:web:company-b.aamp:agents:research-bot-01`,
     agentId:   "research-bot-01",
     connected: relayB.status === "ok",
     relay:     RELAY_B,
-    domain:    "company-b.local",
+    domain:    "company-b.aamp",
+  };
+
+  const complianceAgent: AgentState = {
+    did:       complianceActive ? "did:key:…(sandbox)" : "—",
+    agentId:   "compliance-bot-01",
+    connected: complianceActive,
+    relay:     "Vercel Sandbox :8087",
+    domain:    "company-c.sandbox",
   };
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white flex flex-col">
-      {/* ── Header ────────────────────────────────────────────────────────── */}
-      <header className="border-b border-white/10 bg-black/40 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div>
-              <h1 className="text-sm font-bold tracking-tight text-white">AAMP</h1>
-              <p className="text-[10px] text-zinc-400 leading-none">Agent-to-Agent Messaging Protocol</p>
-            </div>
-          </div>
 
-          {/* Relay badges */}
+      {/* ── Header ──────────────────────────────────────────────────────────── */}
+      <header className="border-b border-white/10 bg-black/40 backdrop-blur-md sticky top-0 z-40">
+        <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center justify-between">
+          <div>
+            <h1 className="text-sm font-bold tracking-tight text-white">AAMP</h1>
+            <p className="text-[10px] text-zinc-400 leading-none">Agent-to-Agent Messaging Protocol</p>
+          </div>
           <div className="flex items-center gap-3">
             <RelayBadge label="Relay A" url={RELAY_A} health={relayA} />
             <RelayBadge label="Relay B" url={RELAY_B} health={relayB} />
-            <a
-              href="https://github.com/brainfish-ai/AAMP"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="ml-2 flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors"
-            >
+            <RelayBadge label="Relay C" url="Vercel Sandbox" health={relayC} />
+            <a href="https://github.com/brainfish-ai/AAMP" target="_blank" rel="noopener noreferrer"
+              className="ml-2 flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors">
               <Github size={14} />
               <span className="hidden sm:inline">brainfish-ai/AAMP</span>
             </a>
@@ -222,8 +235,8 @@ export function Dashboard() {
         </div>
       </header>
 
-      {/* ── Main ──────────────────────────────────────────────────────────── */}
-      <main className="flex-1 max-w-7xl mx-auto w-full px-6 py-8 flex flex-col gap-6">
+      {/* ── Main ────────────────────────────────────────────────────────────── */}
+      <main className="flex-1 max-w-[1400px] mx-auto w-full px-6 py-8 flex flex-col gap-6">
 
         {/* Title + actions */}
         <div className="flex items-start justify-between gap-4">
@@ -236,18 +249,19 @@ export function Dashboard() {
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={reset}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-zinc-700 text-xs text-zinc-400 hover:text-white hover:border-zinc-500 transition-all"
-            >
+            <button onClick={() => setShowRaw(v => !v)}
+              className={cn("flex items-center gap-2 px-3 py-2 rounded-lg border text-xs transition-all",
+                showRaw ? "border-amber-500/50 text-amber-300 bg-amber-500/10" : "border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500")}>
+              <Terminal size={13} />
+              Logs
+            </button>
+            <button onClick={reset}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-zinc-700 text-xs text-zinc-400 hover:text-white hover:border-zinc-500 transition-all">
               <RotateCcw size={13} />
               Reset
             </button>
-            <button
-              onClick={runDemo}
-              disabled={running || !financeAgent?.connected || step === "registering"}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-semibold text-white transition-all shadow-lg shadow-blue-900/30"
-            >
+            <button onClick={runDemo} disabled={running}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-linear-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-semibold text-white transition-all shadow-lg shadow-blue-900/30">
               <Play size={14} />
               {running ? "Running…" : "Run Full Demo"}
             </button>
@@ -261,76 +275,87 @@ export function Dashboard() {
           </div>
         )}
 
-        {/* Agent cards + flow diagram */}
-        <div className="grid grid-cols-[250px_1fr_250px] gap-4 items-start">
+        {/* ── Agent cards + flow diagram ─────────────────────────────────── */}
+        {/*
+          Layout:
+            [Finance Bot (A)]  [FlowDiagram]  [Research Bot (B)]
+                                              [Compliance Bot (C)]
+        */}
+        <div className="grid grid-cols-[220px_1fr_220px] gap-4 items-start">
+
+          {/* Left — Company A */}
           <AgentCard
             label="Finance Bot"
-            company="Company A"
+            company="Company A · Intra"
             tech="TypeScript SDK"
             agent={financeAgent}
             relay={relayA}
             relayLabel={`Relay A — ${RELAY_A}`}
             side="left"
-            isActive={["probing", "probe_sent", "task_sent", "probe_response", "task_response", "completed"].includes(step)}
+            accent="blue"
+            isActive={financeActive}
           />
 
+          {/* Center — Flow diagram */}
           <FlowDiagram step={step} />
 
-          <AgentCard
-            label="Research Bot"
-            company="Company B"
-            tech="Python SDK"
-            agent={researchAgentState}
-            relay={relayB}
-            relayLabel={`Relay B — ${RELAY_B}`}
-            side="right"
-            capabilities={["summarize-pdf", "extract-tables", "classify-doc"]}
-            isActive={["probe_delivered", "probe_response", "task_delivered", "task_processing", "task_response"].includes(step)}
-          />
+          {/* Right — Company B + Company C stacked */}
+          <div className="flex flex-col gap-4">
+            <AgentCard
+              label="Research Bot"
+              company="Company B · Intra"
+              tech="Python SDK"
+              agent={researchAgent}
+              relay={relayB}
+              relayLabel={`Relay B — ${RELAY_B}`}
+              side="right"
+              accent="violet"
+              capabilities={["summarize-pdf", "extract-tables", "classify-doc"]}
+              isActive={researchActive}
+            />
+            <AgentCard
+              label="Compliance Bot"
+              company="Company C · Inter"
+              tech="TypeScript SDK"
+              agent={complianceAgent}
+              relay={relayC}
+              relayLabel="Relay C — Vercel Sandbox"
+              side="right"
+              accent="amber"
+              capabilities={["compliance-check"]}
+              isActive={complianceActive}
+            />
+          </div>
         </div>
 
-        {/* Result panel */}
-        {result !== null && (
-          <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="h-2 w-2 rounded-full bg-emerald-400" />
-              <span className="text-sm font-semibold text-emerald-300">Task Result from Research Bot</span>
+        {/* Raw sandbox log (collapsible) */}
+        {showRaw && (
+          <div className="rounded-2xl border border-amber-500/20 bg-black/60 overflow-hidden">
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-white/5 bg-black/40">
+              <Terminal size={12} className="text-amber-400" />
+              <span className="text-xs font-semibold text-amber-300">Sandbox stdout</span>
+              <span className="ml-auto text-[10px] text-zinc-500">{rawLogs.length} lines</span>
             </div>
-            {(() => {
-              const r = result;
-              const out = r.output as Record<string, unknown> | undefined;
-              return out ? (
-                <div className="grid gap-4 sm:grid-cols-2">
-                  {out.summary != null && (
-                    <div className="rounded-xl bg-black/30 p-4 border border-white/5 sm:col-span-2">
-                      <p className="text-[10px] uppercase tracking-widest text-zinc-400 mb-2">Summary</p>
-                      <p className="text-sm text-zinc-200 leading-relaxed">{String(out.summary)}</p>
-                    </div>
-                  )}
-                  {Array.isArray(out.keyPoints) && (
-                    <div className="rounded-xl bg-black/30 p-4 border border-white/5">
-                      <p className="text-[10px] uppercase tracking-widest text-zinc-400 mb-2">Key Points</p>
-                      <ul className="space-y-1.5">
-                        {(out.keyPoints as string[]).map((pt, i) => (
-                          <li key={i} className="flex items-start gap-2 text-sm text-zinc-300">
-                            <span className="text-emerald-400 mt-0.5">•</span>
-                            {pt}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  {out.agentDid != null && (
-                    <div className="rounded-xl bg-black/30 p-4 border border-white/5">
-                      <p className="text-[10px] uppercase tracking-widest text-zinc-400 mb-2">Processed By</p>
-                      <p className="font-mono text-xs text-violet-300 break-all">{String(out.agentDid)}</p>
-                    </div>
-                  )}
-                </div>
+            <div className="h-64 overflow-y-auto p-4 font-mono text-[11px] text-zinc-300 space-y-0.5">
+              {rawLogs.length === 0 ? (
+                <p className="text-zinc-600 italic">No output yet — click Run Full Demo to start</p>
               ) : (
-                <pre className="text-xs font-mono text-zinc-300">{JSON.stringify(result, null, 2)}</pre>
-              );
-            })()}
+                rawLogs.map((line, i) => (
+                  <div key={i} className={cn("leading-relaxed whitespace-pre-wrap break-all",
+                    line.includes("[error]") || line.toLowerCase().includes("fatal") ? "text-red-400" :
+                    line.includes("[finance-agent]") ? "text-cyan-300" :
+                    line.includes("[research-agent]") ? "text-violet-300" :
+                    line.includes("[compliance-agent]") ? "text-amber-300" :
+                    line.includes("[relay-node]") || line.includes("[compliance-relay]") ? "text-amber-400/70" :
+                    line.includes("[system]") ? "text-zinc-400" :
+                    "text-zinc-500"
+                  )}>
+                    {line}
+                  </div>
+                ))
+              )}
+              <div ref={rawEndRef} />
+            </div>
           </div>
         )}
 
@@ -345,16 +370,14 @@ export function Dashboard() {
 
 function RelayBadge({ label, url, health }: { label: string; url: string; health: RelayHealth }) {
   return (
-    <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border bg-white/[0.03] border-white/10 text-xs">
-      <div
-        className={
-          health.status === "ok"       ? "h-1.5 w-1.5 rounded-full bg-emerald-400" :
-          health.status === "checking" ? "h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" :
-                                         "h-1.5 w-1.5 rounded-full bg-red-500"
-        }
-      />
+    <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border bg-white/3 border-white/10 text-xs">
+      <div className={
+        health.status === "ok"       ? "h-1.5 w-1.5 rounded-full bg-emerald-400" :
+        health.status === "checking" ? "h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" :
+                                       "h-1.5 w-1.5 rounded-full bg-red-500"
+      } />
       <span className="text-zinc-400">{label}</span>
-      <span className="text-zinc-400 text-[10px]">{url.replace("http://", "")}</span>
+      <span className="text-zinc-400 text-[10px]">{url.replace("https://", "").replace("http://", "").slice(0, 30)}</span>
     </div>
   );
 }

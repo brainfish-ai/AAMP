@@ -12,6 +12,7 @@ interface Props {
   relay:      RelayHealth;
   relayLabel: string;
   side:       "left" | "right";
+  accent?:    "blue" | "violet" | "amber";
   capabilities?: string[];
   isActive?:  boolean;
 }
@@ -24,15 +25,24 @@ export function AgentCard({
   relay,
   relayLabel,
   side,
+  accent,
   capabilities = [],
   isActive = false,
 }: Props) {
+  const color = accent ?? (side === "left" ? "blue" : "violet");
+  const borderClass = color === "amber" ? "border-amber-500/30" : color === "blue" ? "border-blue-500/30" : "border-violet-500/30";
+  const ringClass   = color === "amber" ? "ring-2 ring-amber-400/60 shadow-lg shadow-amber-500/20" : "ring-2 ring-cyan-400/60 shadow-lg shadow-cyan-500/20";
+  const capChipClass = color === "amber"
+    ? "bg-amber-500/10 border-amber-500/30 text-amber-300"
+    : side === "right"
+      ? "bg-violet-500/10 border-violet-500/30 text-violet-300"
+      : "bg-blue-500/10 border-blue-500/30 text-blue-300";
+
   return (
     <div
       className={cn(
         "rounded-2xl border bg-white/5 backdrop-blur-sm p-5 flex flex-col gap-3 transition-all duration-500",
-        isActive && "ring-2 ring-cyan-400/60 shadow-lg shadow-cyan-500/20",
-        side === "left" ? "border-blue-500/30" : "border-violet-500/30",
+        isActive ? ringClass : borderClass,
       )}
     >
       {/* Header */}
@@ -81,12 +91,7 @@ export function AgentCard({
           {capabilities.map(cap => (
             <span
               key={cap}
-              className={cn(
-                "px-2 py-0.5 rounded-full text-[10px] font-medium border",
-                side === "right"
-                  ? "bg-violet-500/10 border-violet-500/30 text-violet-300"
-                  : "bg-blue-500/10 border-blue-500/30 text-blue-300",
-              )}
+              className={cn("px-2 py-0.5 rounded-full text-[10px] font-medium border", capChipClass)}
             >
               {cap}
             </span>
