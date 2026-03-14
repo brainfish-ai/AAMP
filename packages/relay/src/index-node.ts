@@ -95,6 +95,7 @@ async function connectNats(): Promise<{ nc: NatsConnection; jsm: JetStreamManage
       subjects:         [`aamp.${DOMAIN}.*.inbox`],
       retention:        RetentionPolicy.Workqueue,
       storage:          StorageType.File,
+      max_bytes:        256 * 1024 * 1024,              // 256 MB — required by Synadia NGS
       max_age:          config.maxTtlMs * 1_000_000,
       max_msg_size:     4 * 1024 * 1024,
       duplicate_window: 60_000_000_000,

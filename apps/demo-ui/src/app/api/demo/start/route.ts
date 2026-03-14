@@ -113,7 +113,7 @@ async function runDemo(sessionId: string): Promise<void> {
     if (!snapCompliance) {
       log("[compliance-relay] Installing dependencies (pnpm)...");
       await complianceBox.runCommand("corepack", ["enable"]);
-      await complianceBox.runCommand("pnpm", ["install", "--frozen-lockfile"]);
+      await complianceBox.runCommand("pnpm", ["install", "--no-frozen-lockfile"]);
 
       log("[compliance-relay] Building packages...");
       await complianceBox.runCommand("pnpm", ["--filter", "@aamp/core",     "build"]);
@@ -132,8 +132,8 @@ async function runDemo(sessionId: string): Promise<void> {
       RELAY_STREAM_NAME: "AAMP_MESSAGES_C",
     };
     await complianceBox.runCommand({
-      cmd:      "node",
-      args:     ["--import", "tsx/esm", "packages/relay/src/index-node.ts"],
+      cmd:      "node_modules/.bin/tsx",
+      args:     ["packages/relay/src/index-node.ts"],
       cwd:      "/vercel/sandbox",
       detached: true,
       env:      relayEnv,
@@ -144,8 +144,8 @@ async function runDemo(sessionId: string): Promise<void> {
 
     // Start compliance agent (connects to localhost relay)
     const complianceCmd = await complianceBox.runCommand({
-      cmd:      "node",
-      args:     ["--import", "tsx/esm", "examples/compliance-agent/src/index.ts"],
+      cmd:      "node_modules/.bin/tsx",
+      args:     ["examples/compliance-agent/src/index.ts"],
       cwd:      "/vercel/sandbox",
       detached: true,
       env:      {
@@ -177,10 +177,12 @@ async function runDemo(sessionId: string): Promise<void> {
 
     if (!snapResearch) {
       log("[research-agent] Installing Python dependencies...");
+      // Install the SDK package itself (not just its requirements)
       await researchBox.runCommand("pip", [
-        "install", "--quiet",
-        "-r", "packages/sdk-py/requirements.txt",
-        "-r", "examples/research-agent/requirements.txt",
+        "install", "--quiet", "-e", "packages/sdk-py/",
+      ]);
+      await researchBox.runCommand("pip", [
+        "install", "--quiet", "-r", "examples/research-agent/requirements.txt",
       ]);
     }
 
@@ -214,7 +216,7 @@ async function runDemo(sessionId: string): Promise<void> {
     if (!snapFinance) {
       log("[finance-agent] Installing dependencies (pnpm)...");
       await financeBox.runCommand("corepack", ["enable"]);
-      await financeBox.runCommand("pnpm", ["install", "--frozen-lockfile"]);
+      await financeBox.runCommand("pnpm", ["install", "--no-frozen-lockfile"]);
 
       log("[finance-agent] Building packages...");
       await financeBox.runCommand("pnpm", ["--filter", "@aamp/core",     "build"]);

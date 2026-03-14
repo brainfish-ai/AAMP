@@ -75,6 +75,7 @@ async function ensureStream(jsm: JetStreamManager, config: RelayConfig): Promise
       subjects,
       retention:        RetentionPolicy.Workqueue,
       storage:          StorageType.File,
+      max_bytes:        256 * 1024 * 1024,              // 256 MB — required by Synadia NGS
       max_age:          config.maxTtlMs * 1_000_000,  // nanoseconds
       max_msg_size:     4 * 1024 * 1024,               // 4 MB
       duplicate_window: 60_000_000_000,                // 60-second dedup window (ns)
