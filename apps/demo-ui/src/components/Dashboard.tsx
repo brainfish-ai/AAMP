@@ -243,9 +243,9 @@ export function Dashboard() {
           <div>
             <h2 className="text-2xl font-bold text-white">Cross-Company Message Flow</h2>
             <p className="text-sm text-zinc-400 mt-1">
-              <span className="text-cyan-400 font-medium">Intra</span>: Finance Bot ↔ Research Bot via Cloudflare Workers (NATS federation)
+              <span className="text-cyan-400 font-medium">Company A · Intra</span>: Finance Bot ↔ Research Bot via Cloudflare Workers (NATS)
               {" · "}
-              <span className="text-amber-400 font-medium">Inter</span>: Finance Bot → Compliance Bot via Vercel Sandbox (cross-provider)
+              <span className="text-amber-400 font-medium">Company B · Inter</span>: Compliance Bot via Vercel Sandbox (cross-company)
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -303,19 +303,19 @@ export function Dashboard() {
           <div className="flex flex-col gap-4">
             <AgentCard
               label="Research Bot"
-              company="Company B · Intra"
+              company="Company A · Intra"
               tech="Python SDK"
               agent={researchAgent}
               relay={relayB}
               relayLabel={`Relay B — ${RELAY_B}`}
               side="right"
-              accent="violet"
+              accent="blue"
               capabilities={["summarize-pdf", "extract-tables", "classify-doc"]}
               isActive={researchActive}
             />
             <AgentCard
               label="Compliance Bot"
-              company="Company C · Inter"
+              company="Company B · Inter"
               tech="TypeScript SDK"
               agent={complianceAgent}
               relay={relayC}
