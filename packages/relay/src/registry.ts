@@ -1,18 +1,19 @@
 /**
- * In-memory agent registry.
+ * Agent registry backed by Cloudflare KV.
  *
- * Tracks which agents are currently connected (via NATS subscription or SSE),
- * their Agent Cards, and their DID Documents.
+ * Replaces the in-memory Map with KV so agent registrations survive
+ * across Worker restarts and are shared between all Worker instances.
  *
- * In a production deployment this would be backed by a persistent store
- * (Redis, Postgres) — the interface is the same.
+ * Keys:
+ *   agent:id:<agentId>   → JSON AgentRegistration
+ *   agent:did:<did>      → agentId string (lookup index)
  */
 
 import type { AgentCard } from "@aamp/core";
 import { createDidWebDocument, type KeyPair, type DIDDocument } from "@aamp/identity";
 
 export interface AgentRegistration {
-  agentId:     string;
+  agentId:      string;
   did:          string;
   card:         AgentCard;
   didDocument:  DIDDocument;
@@ -20,8 +21,11 @@ export interface AgentRegistration {
   lastSeen:     number;
 }
 
+/** KV TTL: 24 hours — agents must re-register after restart */
+const AGENT_TTL_SECONDS = 86_400;
+
 export class AgentRegistry {
-  private agents = new Map<string, AgentRegistration>();
+  constructor(private kv: KVNamespace) {}
 
   register(
     agentId: string,
@@ -29,22 +33,20 @@ export class AgentRegistry {
     keyPair: KeyPair,
     relayPublicUrl: string,
     domain: string,
-  ): AgentRegistration {
-    const did = card.did;
+  ): Promise<AgentRegistration> {
     const didDocument = createDidWebDocument(
-      did,
+      card.did,
       keyPair,
       `${relayPublicUrl}/inbound`,
     );
     return this.registerWithDocument(agentId, card, didDocument);
   }
 
-  /** Register an agent when the DID Document is already available (no key pair required). */
-  registerWithDocument(
+  async registerWithDocument(
     agentId: string,
     card: AgentCard,
     didDocument: DIDDocument,
-  ): AgentRegistration {
+  ): Promise<AgentRegistration> {
     const reg: AgentRegistration = {
       agentId,
       did:          card.did,
@@ -54,35 +56,55 @@ export class AgentRegistry {
       lastSeen:     Date.now(),
     };
 
-    this.agents.set(agentId, reg);
-    this.agents.set(card.did, reg);   // index by DID too
+    const value = JSON.stringify(reg);
+    await Promise.all([
+      this.kv.put(`agent:id:${agentId}`, value,       { expirationTtl: AGENT_TTL_SECONDS }),
+      this.kv.put(`agent:did:${card.did}`, agentId,   { expirationTtl: AGENT_TTL_SECONDS }),
+    ]);
+
     return reg;
   }
 
-  get(agentIdOrDid: string): AgentRegistration | undefined {
-    return this.agents.get(agentIdOrDid);
-  }
+  async get(agentIdOrDid: string): Promise<AgentRegistration | undefined> {
+    // Try direct lookup by agentId
+    const raw = await this.kv.get(`agent:id:${agentIdOrDid}`);
+    if (raw) return JSON.parse(raw) as AgentRegistration;
 
-  touch(agentId: string): void {
-    const reg = this.agents.get(agentId);
-    if (reg) reg.lastSeen = Date.now();
-  }
-
-  list(): AgentRegistration[] {
-    const seen = new Set<string>();
-    const result: AgentRegistration[] = [];
-    for (const reg of this.agents.values()) {
-      if (!seen.has(reg.agentId)) {
-        seen.add(reg.agentId);
-        result.push(reg);
-      }
+    // Try lookup by DID → agentId
+    const agentId = await this.kv.get(`agent:did:${agentIdOrDid}`);
+    if (agentId) {
+      const raw2 = await this.kv.get(`agent:id:${agentId}`);
+      if (raw2) return JSON.parse(raw2) as AgentRegistration;
     }
-    return result;
+
+    return undefined;
   }
 
-  /** Agents that haven't sent a heartbeat in > staleThresholdMs */
-  stale(staleThresholdMs = 60_000): AgentRegistration[] {
+  async touch(agentIdOrDid: string): Promise<void> {
+    const reg = await this.get(agentIdOrDid);
+    if (!reg) return;
+    reg.lastSeen = Date.now();
+    const value = JSON.stringify(reg);
+    await Promise.all([
+      this.kv.put(`agent:id:${reg.agentId}`, value,  { expirationTtl: AGENT_TTL_SECONDS }),
+      this.kv.put(`agent:did:${reg.did}`, reg.agentId, { expirationTtl: AGENT_TTL_SECONDS }),
+    ]);
+  }
+
+  async list(): Promise<AgentRegistration[]> {
+    const { keys } = await this.kv.list({ prefix: "agent:id:" });
+    const results = await Promise.all(
+      keys.map(async key => {
+        const raw = await this.kv.get(key.name);
+        return raw ? (JSON.parse(raw) as AgentRegistration) : null;
+      }),
+    );
+    return results.filter(Boolean) as AgentRegistration[];
+  }
+
+  async stale(staleThresholdMs = 60_000): Promise<AgentRegistration[]> {
     const cutoff = Date.now() - staleThresholdMs;
-    return this.list().filter(r => r.lastSeen < cutoff);
+    const all    = await this.list();
+    return all.filter(r => r.lastSeen < cutoff);
   }
 }

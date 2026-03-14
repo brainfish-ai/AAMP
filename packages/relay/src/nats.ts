@@ -1,10 +1,12 @@
 /**
- * NATS JetStream setup for the AAMP relay.
+ * NATS JetStream setup for the AAMP relay (Cloudflare Workers edition).
+ *
+ * Uses nats.ws (WebSocket transport) so this runs in both Workers and
+ * standard Node.js (via Node.js 18+ native WebSocket).
  *
  * Subject namespace:
  *   aamp.<domain>.<agentId>.inbox   — per-agent durable inbox (WorkQueue stream)
  *   aamp.<domain>.<agentId>.status  — ephemeral status/heartbeat updates
- *   aamp.events                     — broadcast stream for task lifecycle events
  *
  * The WorkQueue retention policy means a message is deleted from the stream
  * as soon as one consumer ACKs it — natural task queue semantics.
@@ -12,13 +14,14 @@
 
 import {
   connect,
+  credsAuthenticator,
   type NatsConnection,
   type JetStreamManager,
   type JetStreamClient,
   AckPolicy,
   RetentionPolicy,
   StorageType,
-} from "nats";
+} from "nats.ws";
 import type { RelayConfig } from "./config.js";
 
 export interface NatsContext {
@@ -28,7 +31,17 @@ export interface NatsContext {
 }
 
 export async function connectNats(config: RelayConfig): Promise<NatsContext> {
-  const nc  = await connect({ servers: config.natsUrl });
+  const opts: Parameters<typeof connect>[0] = {
+    servers: config.natsUrl,
+  };
+
+  if (config.natsCreds) {
+    opts.authenticator = credsAuthenticator(
+      new TextEncoder().encode(config.natsCreds),
+    );
+  }
+
+  const nc  = await connect(opts);
   const jsm = await nc.jetstreamManager();
   const js  = nc.jetstream();
 
@@ -50,14 +63,14 @@ async function ensureStream(jsm: JetStreamManager, config: RelayConfig): Promise
     console.log(`[nats] Stream ${config.streamName} already exists`);
   } catch {
     await jsm.streams.add({
-      name:         config.streamName,
+      name:             config.streamName,
       subjects,
-      retention:    RetentionPolicy.Workqueue,   // delete on ACK
-      storage:      StorageType.File,            // persist to disk
-      max_age:      config.maxTtlMs * 1_000_000, // nanoseconds
-      max_msg_size: 4 * 1024 * 1024,             // 4 MB max per message
-      duplicate_window: 60_000_000_000,          // 60-second deduplication window (ns)
-      num_replicas: 1,                           // increase for HA cluster
+      retention:        RetentionPolicy.Workqueue,
+      storage:          StorageType.File,
+      max_age:          config.maxTtlMs * 1_000_000,  // nanoseconds
+      max_msg_size:     4 * 1024 * 1024,               // 4 MB
+      duplicate_window: 60_000_000_000,                // 60-second dedup window (ns)
+      num_replicas:     1,
     });
     console.log(`[nats] Created stream ${config.streamName} for subjects: ${subjects.join(", ")}`);
   }
@@ -65,25 +78,24 @@ async function ensureStream(jsm: JetStreamManager, config: RelayConfig): Promise
 
 /**
  * Ensure a durable push consumer exists for a given agent.
- * The consumer delivers messages pushed to the agent's inbox subject.
  */
 export async function ensureAgentConsumer(
-  jsm: JetStreamManager,
-  config: RelayConfig,
+  jsm:     JetStreamManager,
+  config:  RelayConfig,
   agentId: string,
 ): Promise<void> {
-  const consumerName = `agent-${agentId}`;
+  const consumerName  = `agent-${agentId}`;
   const filterSubject = `aamp.${config.domain}.${agentId}.inbox`;
 
   try {
     await jsm.consumers.info(config.streamName, consumerName);
   } catch {
     await jsm.consumers.add(config.streamName, {
-      durable_name:    consumerName,
-      filter_subject:  filterSubject,
-      ack_policy:      AckPolicy.Explicit,
-      max_deliver:     5,                        // retry up to 5 times before DLQ
-      ack_wait:        30_000_000_000,           // 30 seconds (nanoseconds)
+      durable_name:   consumerName,
+      filter_subject: filterSubject,
+      ack_policy:     AckPolicy.Explicit,
+      max_deliver:    5,
+      ack_wait:       30_000_000_000,  // 30 seconds (ns)
     });
     console.log(`[nats] Created consumer ${consumerName} for ${filterSubject}`);
   }
@@ -92,7 +104,6 @@ export async function ensureAgentConsumer(
 /**
  * Pull and return any messages pending in the agent's durable JetStream consumer.
  * Called when a new SSE connection opens so missed messages are replayed immediately.
- * Uses nats.js v2 JetStreamClient.fetch() API.
  */
 export async function drainAgentMailbox(
   js:      JetStreamClient,
@@ -102,10 +113,9 @@ export async function drainAgentMailbox(
   const consumerName = `agent-${agentId}`;
   const results: string[] = [];
   try {
-    // Check if consumer has pending messages first
     const iter = js.fetch(config.streamName, consumerName, {
       batch:   50,
-      expires: 500,  // 500 ms timeout
+      expires: 500,
     });
     for await (const msg of iter) {
       results.push(new TextDecoder().decode(msg.data));
@@ -118,27 +128,24 @@ export async function drainAgentMailbox(
 }
 
 /**
- * Publish an envelope to an agent's inbox subject.
+ * Publish an envelope to an agent's inbox subject (JetStream durable delivery).
  */
 export async function publishToMailbox(
-  js: JetStreamClient,
-  domain: string,
-  agentId: string,
-  payload: Uint8Array,
+  js:        JetStreamClient,
+  domain:    string,
+  agentId:   string,
+  payload:   Uint8Array,
   messageId: string,
 ): Promise<void> {
   const subject = `aamp.${domain}.${agentId}.inbox`;
-  await js.publish(subject, payload, {
-    msgID: messageId,         // NATS deduplication key
-  });
+  await js.publish(subject, payload, { msgID: messageId });
 }
 
 /**
  * Extract agentId from a DID for local routing.
- * Only works for DIDs managed by this relay's domain.
  *
  * did:web:acme.com:agents:finance-01  →  "finance-01"
- * did:key:z6Mk...                     →  last 8 chars of multibase key
+ * did:key:z6Mk...                     →  last 12 chars of multibase key
  */
 export function agentIdFromDid(did: string, domain: string): string | null {
   if (did.startsWith(`did:web:${domain}`)) {
@@ -147,7 +154,7 @@ export function agentIdFromDid(did: string, domain: string): string | null {
   }
   if (did.startsWith("did:key:")) {
     const key = did.slice("did:key:".length);
-    return key.slice(-12);  // short stable identifier for local routing
+    return key.slice(-12);
   }
   return null;
 }

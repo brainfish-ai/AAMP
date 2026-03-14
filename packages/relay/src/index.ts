@@ -1,34 +1,36 @@
-import { loadConfig } from "./config.js";
-import { connectNats } from "./nats.js";
-import { buildServer } from "./server.js";
+/**
+ * AAMP Relay — Cloudflare Workers entry point.
+ *
+ * The NATS connection and Hono app are cached at module scope so they are
+ * reused across requests handled by the same Worker instance.
+ */
 
-async function main() {
-  const config = loadConfig();
+import { loadConfig, type WorkerEnv } from "./config.js";
+import { connectNats, type NatsContext } from "./nats.js";
+import { buildApp } from "./server.js";
+import type { Hono } from "hono";
 
-  console.log(`[aamp-relay] Starting AAMP Relay v0.1.0`);
-  console.log(`[aamp-relay] Domain:     ${config.domain}`);
-  console.log(`[aamp-relay] Public URL: ${config.publicUrl}`);
-  console.log(`[aamp-relay] NATS:       ${config.natsUrl}`);
+let cachedNats: NatsContext | null = null;
+let cachedApp:  ReturnType<typeof buildApp> | null = null;
+let cachedKv:   KVNamespace | null = null;
 
-  const nats = await connectNats(config);
+export default {
+  async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
+    const config = loadConfig(env);
 
-  const server = await buildServer(config, nats);
+    // Re-create NATS connection if closed or first request
+    if (!cachedNats || cachedNats.nc.isClosed()) {
+      console.log("[relay] Establishing NATS connection...");
+      cachedNats = await connectNats(config);
+      cachedApp  = null;  // force app rebuild with new NATS context
+    }
 
-  await server.listen({ port: config.httpPort, host: "0.0.0.0" });
-  console.log(`[aamp-relay] HTTP server listening on port ${config.httpPort}`);
+    // Build the Hono app once per Worker instance (or after NATS reconnect)
+    if (!cachedApp || cachedKv !== env.KV_AGENTS) {
+      cachedKv  = env.KV_AGENTS;
+      cachedApp = buildApp(config, cachedNats, env.KV_AGENTS);
+    }
 
-  const shutdown = async () => {
-    console.log("[aamp-relay] Shutting down...");
-    await server.close();
-    await nats.nc.drain();
-    process.exit(0);
-  };
-
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
-}
-
-main().catch(err => {
-  console.error("[aamp-relay] Fatal error:", err);
-  process.exit(1);
-});
+    return cachedApp.fetch(request, env, ctx);
+  },
+};

@@ -1,0 +1,35 @@
+name = "aamp-relay-a"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+RELAY_DOMAIN      = "company-a.aamp.workers.dev"
+RELAY_PUBLIC_URL  = "https://aamp-relay-a.YOUR_SUBDOMAIN.workers.dev"
+RELAY_STREAM_NAME = "AAMP_MESSAGES_A"
+
+# Create with: wrangler kv:namespace create KV_AGENTS
+[[kv_namespaces]]
+binding = "KV_AGENTS"
+id      = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Secrets (never commit values) — set with:
+#   wrangler secret put NATS_URL
+#   wrangler secret put NATS_CREDS   (NKey seed from Synadia Cloud)
+#   wrangler secret put RELAY_STRICT_AUTH
+
+# ── Relay B (Company B) ──────────────────────────────────────────────────────
+# Deploy with: wrangler deploy --env relay-b
+[env.relay-b]
+name = "aamp-relay-b"
+
+[env.relay-b.vars]
+RELAY_DOMAIN      = "company-b.aamp.workers.dev"
+RELAY_PUBLIC_URL  = "https://aamp-relay-b.YOUR_SUBDOMAIN.workers.dev"
+RELAY_STREAM_NAME = "AAMP_MESSAGES_B"
+
+# Create a separate KV namespace for relay-b:
+#   wrangler kv:namespace create KV_AGENTS --env relay-b
+[[env.relay-b.kv_namespaces]]
+binding = "KV_AGENTS"
+id      = "REPLACE_WITH_RELAY_B_KV_NAMESPACE_ID"

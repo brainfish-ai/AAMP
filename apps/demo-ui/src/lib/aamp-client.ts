@@ -272,6 +272,54 @@ export function dispatchInbound(env: Envelope): void {
   if (env.taskId) taskHandlers.get(env.taskId)?.(env);
 }
 
+// ─── Sandbox-driven live demo ────────────────────────────────────────────────
+//
+// When NEXT_PUBLIC_USE_SANDBOX=true the demo spawns two real Cloudflare Sandboxes
+// (finance-agent + research-agent) instead of simulating the finance agent in
+// the browser.  The FlowDiagram is driven by SSE events parsed from sandbox stdout.
+
+export async function runSandboxDemo(
+  onStep: (step: FlowStep, log: Omit<LogEntry, "id">) => void,
+): Promise<void> {
+  // 1. Spawn both agent sandboxes
+  const startRes = await fetch("/api/demo/start", { method: "POST" });
+  if (!startRes.ok) throw new Error(`Failed to start sandbox demo: ${await startRes.text()}`);
+  const { sessionId } = await startRes.json() as { sessionId: string };
+
+  // 2. Subscribe to the SSE stream of parsed log events
+  return new Promise((resolve, reject) => {
+    const es = new EventSource(`/api/demo/stream?sessionId=${sessionId}`);
+
+    es.addEventListener("step", e => {
+      try {
+        const { step, line, timestamp } = JSON.parse(e.data) as {
+          step: FlowStep;
+          line: string;
+          timestamp: number;
+        };
+        onStep(step, {
+          timestamp,
+          type:  "SYSTEM",
+          from:  line.startsWith("[finance") ? "Finance Bot" : "Research Bot",
+          to:    "AAMP Relay",
+          label: line,
+        });
+      } catch { /* skip malformed */ }
+    });
+
+    es.addEventListener("done", () => {
+      es.close();
+      resolve();
+    });
+
+    es.addEventListener("error", (evt) => {
+      es.close();
+      reject(new Error("Sandbox stream error"));
+      void evt;
+    });
+  });
+}
+
 // ─── High-level demo flow ─────────────────────────────────────────────────────
 
 export interface DemoContext {
