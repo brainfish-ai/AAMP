@@ -15,6 +15,7 @@
  *   node --import tsx/esm packages/relay/src/index-node.ts
  */
 
+import { readFileSync } from "fs";
 import { serve } from "@hono/node-server";
 import { Hono }  from "hono";
 import { streamSSE } from "hono/streaming";
@@ -48,8 +49,17 @@ const PORT        = parseInt(process.env.RELAY_PORT      ?? "8087", 10);
 const DOMAIN      = process.env.RELAY_DOMAIN     ?? "company-c.sandbox";
 const PUBLIC_URL  = process.env.RELAY_PUBLIC_URL ?? `http://localhost:${PORT}`;
 const NATS_URL    = process.env.NATS_URL          ?? "wss://connect.ngs.global";
-const NATS_CREDS  = process.env.NATS_CREDS;
 const STREAM_NAME = process.env.RELAY_STREAM_NAME ?? "AAMP_MESSAGES_C";
+
+// Load NATS creds from file (avoids multiline env var truncation in sandboxes)
+// or fall back to the NATS_CREDS env var directly.
+const NATS_CREDS = (() => {
+  const file = process.env.NATS_CREDS_FILE;
+  if (file) {
+    try { return readFileSync(file, "utf8"); } catch { /* fall through */ }
+  }
+  return process.env.NATS_CREDS;
+})();
 
 const config: RelayConfig = {
   natsUrl:                NATS_URL,

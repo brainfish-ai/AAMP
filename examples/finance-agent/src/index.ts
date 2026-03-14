@@ -24,6 +24,7 @@
  *   cd examples/finance-agent && pnpm start
  */
 
+import { readFileSync } from "fs";
 import {
   AampAgent,
   generateKeyPair,
@@ -39,6 +40,14 @@ const RELAY_B_URL         = process.env.RELAY_B_URL         ?? "http://localhost
 const RELAY_C_URL         = process.env.RELAY_C_URL         ?? "http://localhost:8087";
 const NATS_URL            = process.env.NATS_URL            ?? "nats://localhost:4222";
 const RESEARCH_AGENT_ID   = process.env.RESEARCH_AGENT_ID   ?? "research-bot-01";
+
+const NATS_CREDS = (() => {
+  const file = process.env.NATS_CREDS_FILE;
+  if (file) {
+    try { return readFileSync(file, "utf8"); } catch { /* fall through */ }
+  }
+  return process.env.NATS_CREDS ?? "";
+})();
 const COMPLIANCE_AGENT_ID = process.env.COMPLIANCE_AGENT_ID ?? "compliance-bot-01";
 
 async function main() {
@@ -52,7 +61,8 @@ async function main() {
     did,
     privateKey:   keypair.privateKey,
     relayUrl:     RELAY_A_URL,
-    natsUrl:      NATS_URL,          // Connect directly via NATS for reliable delivery
+    natsUrl:      NATS_URL,
+    natsCreds:    NATS_CREDS || undefined,
     name:         "Finance Bot 01",
     domain:       "company-a.local",
     agentId:      "finance-bot-01",

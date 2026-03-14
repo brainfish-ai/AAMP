@@ -29,7 +29,7 @@
  *   await agent.disconnect();
  */
 
-import { connect, type NatsConnection, type Subscription } from "nats";
+import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection, type Subscription } from "nats";
 import { v7 as uuidv7 } from "uuid";
 import {
   type Envelope,
@@ -63,6 +63,8 @@ export interface AampAgentOptions {
   relayUrl: string;
   /** NATS server URL — optional; if provided, agent connects via NATS directly */
   natsUrl?: string;
+  /** NATS credentials — NKey/JWT .creds file contents or simple access token */
+  natsCreds?: string;
   /** Agent's human-readable name */
   name?: string;
   /** Capabilities this agent exposes */
@@ -305,7 +307,17 @@ export class AampAgent {
         ? rawUrl.replace("ws://", "nats://")
         : rawUrl;
 
-    this.nc  = await connect({ servers: serverUrl });
+    const connectOpts: Parameters<typeof connect>[0] = { servers: serverUrl };
+    const creds = (this.opts.natsCreds ?? process.env["NATS_CREDS"] ?? "").trim();
+    if (creds) {
+      if (creds.startsWith("-----BEGIN NATS")) {
+        connectOpts.authenticator = credsAuthenticator(new TextEncoder().encode(creds));
+      } else {
+        connectOpts.authenticator = tokenAuthenticator(creds);
+      }
+    }
+
+    this.nc  = await connect(connectOpts);
     const subject = `aamp.${this.domain}.${this.agentId}.inbox`;
     this.sub = this.nc.subscribe(subject);
 

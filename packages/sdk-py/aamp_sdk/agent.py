@@ -66,6 +66,8 @@ class AampAgent:
         relay_url: str,
         name: Optional[str] = None,
         nats_url: Optional[str] = None,
+        nats_creds: Optional[str] = None,
+        nats_creds_file: Optional[str] = None,
         domain: str = "localhost",
         agent_id: Optional[str] = None,
         capabilities: Optional[list] = None,
@@ -75,6 +77,8 @@ class AampAgent:
         self.relay_url   = relay_url.rstrip("/")
         self.name        = name or self._extract_agent_id(did)
         self.nats_url    = nats_url
+        self.nats_creds  = nats_creds
+        self.nats_creds_file = nats_creds_file
         self.domain      = domain
         self.agent_id    = agent_id or self._extract_agent_id(did)
         self.capabilities = capabilities or []
@@ -92,7 +96,24 @@ class AampAgent:
         await self._register_with_relay()
 
         if self.nats_url:
-            self._nc = await nats.connect(self.nats_url)
+            # Transform WebSocket URLs to TLS for the nats-py TCP client
+            server = self.nats_url
+            if server.startswith("wss://"):
+                server = "tls://" + server[6:]
+            elif server.startswith("ws://"):
+                server = "nats://" + server[5:]
+
+            connect_opts: dict = {"servers": server}
+            creds_file = self.nats_creds_file
+            if creds_file:
+                connect_opts["user_credentials"] = creds_file
+            elif self.nats_creds:
+                import tempfile, os as _os
+                tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".creds", delete=False)
+                tmp.write(self.nats_creds)
+                tmp.close()
+                connect_opts["user_credentials"] = tmp.name
+            self._nc = await nats.connect(**connect_opts)
             subject  = f"aamp.{self.domain}.{self.agent_id}.inbox"
             await self._nc.subscribe(subject, cb=self._nats_message_handler)
             print(f"[aamp-agent] {self.did} connected via NATS ({subject})")

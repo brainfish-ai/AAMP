@@ -4,7 +4,7 @@
   "description": "AAMP Compliance Agent — Company C (Vercel Sandbox demo)",
   "type": "module",
   "scripts": {
-    "start": "node --import tsx/esm src/index.ts",
+    "start": "tsx src/index.ts",
     "build": "tsc",
     "dev": "tsx src/index.ts"
   },

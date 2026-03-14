@@ -14,13 +14,21 @@
  * Provider: Vercel Sandbox (company-c.sandbox)
  */
 
+import { readFileSync } from "fs";
 import { AampAgent, generateKeyPair, createDidKey, TaskStatus } from "@aamp/sdk";
 
 const RELAY_C_URL  = process.env.RELAY_C_URL  ?? "http://localhost:8087";
 const NATS_URL     = process.env.NATS_URL      ?? "wss://connect.ngs.global";
-const NATS_CREDS   = process.env.NATS_CREDS;
 const AGENT_ID     = process.env.AGENT_ID      ?? "compliance-bot-01";
 const DOMAIN       = process.env.RELAY_DOMAIN  ?? "company-c.sandbox";
+
+const NATS_CREDS = (() => {
+  const file = process.env.NATS_CREDS_FILE;
+  if (file) {
+    try { return readFileSync(file, "utf8"); } catch { /* fall through */ }
+  }
+  return process.env.NATS_CREDS;
+})();
 
 async function main() {
   const keypair = await generateKeyPair();

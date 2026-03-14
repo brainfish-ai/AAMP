@@ -121,40 +121,51 @@ async function runDemo(sessionId: string): Promise<void> {
       await complianceBox.runCommand("pnpm", ["--filter", "@aamp/sdk",      "build"]);
     }
 
-    // Start Node.js Relay C (with public URL so it knows its own endpoint for DID docs)
+    // Write NATS credentials to a file to avoid multiline env var truncation
+    // (Vercel Sandbox API may truncate env values at embedded newlines)
+    if (natsCreds) {
+      const credsB64 = Buffer.from(natsCreds).toString("base64");
+      await complianceBox.runCommand({
+        cmd:  "bash",
+        args: ["-c", `echo '${credsB64}' | base64 -d > /tmp/nats.creds && chmod 600 /tmp/nats.creds`],
+        cwd:  "/vercel/sandbox",
+      });
+      log("[compliance-relay] NATS creds written to /tmp/nats.creds");
+    }
+
+    // Start Node.js Relay C via pnpm — runs in package dir so deps resolve correctly
     log("[compliance-relay] Starting Relay C inside Vercel Sandbox (Node.js)...");
-    const relayEnv = {
-      RELAY_PUBLIC_URL: relayCPublicUrl,
-      RELAY_DOMAIN:     "company-c.sandbox",
-      RELAY_PORT:       "8087",
-      NATS_URL:         natsUrl,
-      NATS_CREDS:       natsCreds,
-      RELAY_STREAM_NAME: "AAMP_MESSAGES_C",
-    };
     await complianceBox.runCommand({
-      cmd:      "node_modules/.bin/tsx",
-      args:     ["packages/relay/src/index-node.ts"],
+      cmd:      "pnpm",
+      args:     ["--filter", "@aamp/relay", "run", "start:node"],
       cwd:      "/vercel/sandbox",
       detached: true,
-      env:      relayEnv,
+      env:      makeEnv({
+        RELAY_PUBLIC_URL:  relayCPublicUrl,
+        RELAY_DOMAIN:      "company-c.sandbox",
+        RELAY_PORT:        "8087",
+        NATS_URL:          natsUrl,
+        NATS_CREDS_FILE:   natsCreds ? "/tmp/nats.creds" : "",
+        RELAY_STREAM_NAME: "AAMP_MESSAGES_C",
+      }),
     });
 
     await sleep(3_000);
     log("[compliance-relay] Relay C online ✓");
 
-    // Start compliance agent (connects to localhost relay)
+    // Start compliance agent via pnpm — runs in package dir so deps resolve correctly
     const complianceCmd = await complianceBox.runCommand({
-      cmd:      "node_modules/.bin/tsx",
-      args:     ["examples/compliance-agent/src/index.ts"],
+      cmd:      "pnpm",
+      args:     ["--filter", "@aamp/example-compliance-agent", "run", "start"],
       cwd:      "/vercel/sandbox",
       detached: true,
-      env:      {
-        RELAY_C_URL:   "http://localhost:8087",
-        NATS_URL:      natsUrl,
-        NATS_CREDS:    natsCreds,
-        RELAY_DOMAIN:  "company-c.sandbox",
-        AGENT_ID:      "compliance-bot-01",
-      },
+      env:      makeEnv({
+        RELAY_C_URL:     "http://localhost:8087",
+        NATS_URL:        natsUrl,
+        NATS_CREDS_FILE: natsCreds ? "/tmp/nats.creds" : "",
+        RELAY_DOMAIN:    "company-c.sandbox",
+        AGENT_ID:        "compliance-bot-01",
+      }),
     });
 
     log("[compliance-agent] Online — waiting for compliance-check tasks via Relay C (Vercel)");
@@ -175,9 +186,17 @@ async function runDemo(sessionId: string): Promise<void> {
                    RELAY_DOMAIN: "company-a.aamp.workers.dev", AGENT_ID: "research-bot-01" }) },
     );
 
+    if (natsCreds) {
+      const credsB64 = Buffer.from(natsCreds).toString("base64");
+      await researchBox.runCommand({
+        cmd:  "bash",
+        args: ["-c", `echo '${credsB64}' | base64 -d > /tmp/nats.creds && chmod 600 /tmp/nats.creds`],
+        cwd:  "/vercel/sandbox",
+      });
+    }
+
     if (!snapResearch) {
       log("[research-agent] Installing Python dependencies...");
-      // Install the SDK package itself (not just its requirements)
       await researchBox.runCommand("pip", [
         "install", "--quiet", "-e", "packages/sdk-py/",
       ]);
@@ -191,6 +210,11 @@ async function runDemo(sessionId: string): Promise<void> {
       args:     ["examples/research-agent/main.py"],
       cwd:      "/vercel/sandbox",
       detached: true,
+      env:      makeEnv({
+        RELAY_B_URL:     relayBUrl,
+        NATS_URL:        natsUrl,
+        NATS_CREDS_FILE: natsCreds ? "/tmp/nats.creds" : "",
+      }),
     });
 
     log("[research-agent] Online — waiting for tasks via Relay B (Cloudflare)");
@@ -213,6 +237,15 @@ async function runDemo(sessionId: string): Promise<void> {
                    RELAY_C_URL: relayCPublicUrl, NATS_URL: natsUrl, NATS_CREDS: natsCreds }) },
     );
 
+    if (natsCreds) {
+      const credsB64 = Buffer.from(natsCreds).toString("base64");
+      await financeBox.runCommand({
+        cmd:  "bash",
+        args: ["-c", `echo '${credsB64}' | base64 -d > /tmp/nats.creds && chmod 600 /tmp/nats.creds`],
+        cwd:  "/vercel/sandbox",
+      });
+    }
+
     if (!snapFinance) {
       log("[finance-agent] Installing dependencies (pnpm)...");
       await financeBox.runCommand("corepack", ["enable"]);
@@ -233,6 +266,13 @@ async function runDemo(sessionId: string): Promise<void> {
       args:     ["examples/finance-agent/dist/index.js"],
       cwd:      "/vercel/sandbox",
       detached: true,
+      env:      makeEnv({
+        RELAY_A_URL:     relayAUrl,
+        RELAY_B_URL:     relayBUrl,
+        RELAY_C_URL:     relayCPublicUrl,
+        NATS_URL:        natsUrl,
+        NATS_CREDS_FILE: natsCreds ? "/tmp/nats.creds" : "",
+      }),
     });
 
     // Stream logs from all three concurrently

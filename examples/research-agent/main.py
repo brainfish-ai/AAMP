@@ -41,6 +41,19 @@ NATS_URL     = os.getenv("NATS_URL", "nats://localhost:4222")
 DOMAIN       = os.getenv("RELAY_DOMAIN", "company-b.local")
 AGENT_ID     = os.getenv("AGENT_ID", "research-bot-01")
 
+# Load NATS creds from file (avoids multiline env var truncation in sandboxes)
+def _load_nats_creds() -> str:
+    creds_file = os.getenv("NATS_CREDS_FILE")
+    if creds_file:
+        try:
+            with open(creds_file, "r") as f:
+                return f.read()
+        except Exception:
+            pass
+    return os.getenv("NATS_CREDS", "")
+
+NATS_CREDS = _load_nats_creds()
+
 
 async def main():
     # ── Step 1: Generate or restore identity ──────────────────────
@@ -57,6 +70,8 @@ async def main():
         keypair=keypair,
         relay_url=RELAY_B_URL,
         nats_url=NATS_URL,
+        nats_creds_file=os.getenv("NATS_CREDS_FILE") or None,
+        nats_creds=NATS_CREDS or None,
         name="Research Bot 01",
         domain=DOMAIN,
         agent_id=AGENT_ID,
