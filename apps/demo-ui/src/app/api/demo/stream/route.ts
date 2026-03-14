@@ -14,21 +14,35 @@
  */
 
 import { type NextRequest } from "next/server";
-import { sessionLogs, sessionDone } from "../start/route";
+import { sessionLogs, sessionDone } from "@/lib/session-store";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
+export const maxDuration = 120;
 
 /** Maps a raw log line to a FlowStep name (or null if not a step-changing line). */
 function parseFlowStep(line: string): string | null {
-  if (line.includes("Probing Research Agent"))         return "probing";
-  if (line.includes("Probe accepted"))                 return "probe_response";
-  if (line.includes("Probe rejected"))                 return "error";
-  if (line.includes("Sending summarize-pdf"))          return "task_sent";
-  if (line.includes("Received summarize-pdf"))         return "task_processing";
-  if (line.includes("Summary generated"))              return "task_response";
-  if (line.includes("Task completed") ||
-      line.includes("✓ Task completed"))               return "completed";
-  if (line.includes("[error]"))                        return "error";
+  // Phase 1: Finance → Research (Cloudflare → Cloudflare)
+  if (line.includes("Probing Research Agent"))               return "probing";
+  if (line.includes("Probe accepted") && line.includes("finance")) return "probe_response";
+  if (line.includes("Probe rejected") && !line.includes("compliance")) return "error";
+  if (line.includes("Sending summarize-pdf"))                return "task_sent";
+  if (line.includes("Received summarize-pdf"))               return "task_processing";
+  if (line.includes("Summary generated"))                    return "task_response";
+  if (line.includes("Research task completed"))              return "task_response";
+
+  // Phase 2: Finance → Compliance (Cloudflare → Vercel Sandbox)
+  if (line.includes("Probing Compliance Agent"))             return "compliance_probing";
+  if (line.includes("Compliance probe accepted"))            return "compliance_probe_response";
+  if (line.includes("compliance-check task") ||
+      line.includes("sending compliance-check"))             return "compliance_task_sent";
+  if (line.includes("TASK received: compliance-check"))      return "compliance_processing";
+  if (line.includes("Compliance check complete") ||
+      line.includes("✓ Compliance check complete"))          return "compliance_done";
+
+  // Terminal
+  if (line.includes("[error]"))                              return "error";
+  if (line.includes("✓ Research task completed") ||
+      line.includes("✓ Task completed"))                     return "research_done";
   return null;
 }
 

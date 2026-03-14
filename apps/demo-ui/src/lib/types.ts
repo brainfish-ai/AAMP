@@ -42,16 +42,25 @@ export interface Envelope {
 export type FlowStep =
   | "idle"
   | "registering"
+  // ── Phase 1: Finance ↔ Research (Cloudflare A ↔ Cloudflare B) ──
   | "probing"
-  | "probe_sent"       // Finance → Relay A
-  | "probe_federated"  // Relay A → Relay B
-  | "probe_delivered"  // Relay B → Research Bot
-  | "probe_response"   // Research Bot → Relay B → Relay A → Finance
-  | "task_sent"        // Finance → Relay A
-  | "task_federated"   // Relay A → Relay B
-  | "task_delivered"   // Relay B → Research Bot
-  | "task_processing"  // Research Bot working
-  | "task_response"    // Research Bot → ... → Finance
+  | "probe_sent"
+  | "probe_federated"
+  | "probe_delivered"
+  | "probe_response"
+  | "task_sent"
+  | "task_federated"
+  | "task_delivered"
+  | "task_processing"
+  | "task_response"
+  | "research_done"
+  // ── Phase 2: Finance → Compliance (Cloudflare A → Vercel Sandbox C) ──
+  | "compliance_probing"
+  | "compliance_probe_response"
+  | "compliance_task_sent"
+  | "compliance_processing"
+  | "compliance_done"
+  // ── Terminal ──
   | "completed"
   | "error";
 

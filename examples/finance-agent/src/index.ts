@@ -34,10 +34,12 @@ import {
   TaskStatus,
 } from "@aamp/sdk";
 
-const RELAY_A_URL       = process.env.RELAY_A_URL       ?? "http://localhost:8080";
-const RELAY_B_URL       = process.env.RELAY_B_URL       ?? "http://localhost:8081";
-const NATS_URL          = process.env.NATS_URL          ?? "nats://localhost:4222";
-const RESEARCH_AGENT_ID = process.env.RESEARCH_AGENT_ID ?? "research-bot-01";
+const RELAY_A_URL         = process.env.RELAY_A_URL         ?? "http://localhost:8080";
+const RELAY_B_URL         = process.env.RELAY_B_URL         ?? "http://localhost:8081";
+const RELAY_C_URL         = process.env.RELAY_C_URL         ?? "http://localhost:8087";
+const NATS_URL            = process.env.NATS_URL            ?? "nats://localhost:4222";
+const RESEARCH_AGENT_ID   = process.env.RESEARCH_AGENT_ID   ?? "research-bot-01";
+const COMPLIANCE_AGENT_ID = process.env.COMPLIANCE_AGENT_ID ?? "compliance-bot-01";
 
 async function main() {
   // ── Step 1: Generate identity ────────────────────────────────
@@ -59,7 +61,7 @@ async function main() {
 
   await agent.connect();
 
-  // ── Step 3: Pre-register the Research Agent's DID Document with Relay A ─
+  // ── Step 3: Pre-register remote DID Documents with Relay A ─────────────
   // In production this is resolved automatically via did:web DNS lookup.
   // For local dev we POST the DID Document to Relay A's /resolver/register
   // endpoint since company-b.local has no real DNS.
@@ -86,6 +88,28 @@ async function main() {
 
   console.log(`[finance-agent] Research Agent DID: ${researchAgentDid}`);
   console.log(`[finance-agent] Research Agent Relay: ${RELAY_B_URL}/inbound`);
+
+  // Pre-register Compliance Agent (Company C — Vercel Sandbox, Relay C)
+  const complianceAgentDid = `did:web:company-c.sandbox:agents:${COMPLIANCE_AGENT_ID}`;
+  const mockComplianceDIDDoc = {
+    "@context": ["https://www.w3.org/ns/did/v1"],
+    id: complianceAgentDid,
+    verificationMethod: [],
+    authentication:  [],
+    assertionMethod: [],
+    service: [{
+      id:              `${complianceAgentDid}#aamp-relay`,
+      type:            "AAMPRelay",
+      serviceEndpoint: `${RELAY_C_URL}/inbound`,
+    }],
+  };
+  await fetch(`${RELAY_A_URL}/resolver/register`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ did: complianceAgentDid, document: mockComplianceDIDDoc }),
+  });
+  console.log(`[finance-agent] Compliance Agent DID: ${complianceAgentDid}`);
+  console.log(`[finance-agent] Compliance Agent Relay: ${RELAY_C_URL}/inbound (Vercel Sandbox)`);
 
   // ── Step 4: Probe Research Agent before committing ────────────
   console.log("\n[finance-agent] Probing Research Agent capability...");
@@ -137,9 +161,46 @@ async function main() {
       timeoutMs:    90_000,   // wait up to 90 seconds for response
     });
 
-    console.log("\n[finance-agent] ✓ Task completed successfully!");
+    console.log("\n[finance-agent] ✓ Research task completed successfully!");
     console.log("[finance-agent] Summary received:");
     console.log(JSON.stringify(result, null, 2));
+
+    // ── Step 6: Compliance check via Relay C (Vercel Sandbox) ────────────
+    console.log("\n[finance-agent] Probing Compliance Agent (Vercel Sandbox, Relay C)...");
+    const summary = (result as Record<string, unknown>)?.output as Record<string, unknown> | undefined;
+
+    try {
+      const complianceProbe = await agent.probe({
+        to:           complianceAgentDid,
+        capabilityId: "compliance-check",
+        parameters:   { region: "US", docType: "quarterly-report" },
+        timeoutMs:    10_000,
+      });
+
+      if (complianceProbe.accepted) {
+        console.log(`[finance-agent] Compliance probe accepted! Sending compliance-check to Relay C...`);
+
+        const complianceResult = await agent.send({
+          to:          complianceAgentDid,
+          capability:  "compliance-check",
+          payload:     {
+            summary:  String(summary?.summary ?? "Quarterly financial report summary"),
+            docType:  "quarterly-report",
+            region:   "US",
+          },
+          ttlMs:      60_000,
+          timeoutMs:  30_000,
+        });
+
+        console.log("\n[finance-agent] ✓ Compliance check complete! (via Vercel Sandbox Relay C)");
+        console.log("[finance-agent] Compliance result:");
+        console.log(JSON.stringify(complianceResult, null, 2));
+      } else {
+        console.log("[finance-agent] Compliance probe rejected:", complianceProbe.rejectionReason);
+      }
+    } catch (err) {
+      console.warn("[finance-agent] Compliance check skipped:", err);
+    }
 
   } catch (err) {
     console.error("\n[finance-agent] ✗ Task failed:", err);

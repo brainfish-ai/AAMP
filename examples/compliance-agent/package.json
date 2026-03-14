@@ -1,0 +1,19 @@
+{
+  "name": "@aamp/example-compliance-agent",
+  "version": "0.1.0",
+  "description": "AAMP Compliance Agent — Company C (Vercel Sandbox demo)",
+  "type": "module",
+  "scripts": {
+    "start": "node --import tsx/esm src/index.ts",
+    "build": "tsc",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@aamp/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.7.3"
+  }
+}

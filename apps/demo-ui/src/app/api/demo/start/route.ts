@@ -1,37 +1,38 @@
 /**
  * POST /api/demo/start
  *
- * Spins up two Vercel Sandboxes to run the real agent code:
- *   - Sandbox A: Finance Agent (Company A) — node22 runtime
- *   - Sandbox B: Research Agent (Company B) — python3.13 runtime
+ * Spins up THREE Vercel Sandboxes demonstrating AAMP cross-provider federation:
  *
- * Both sandboxes clone the AAMP repo, install dependencies, and run
- * their respective agents. They communicate ONLY through the deployed
- * Cloudflare relay Workers — zero direct contact between sandboxes.
+ *   Provider A — Cloudflare Worker  (Relay A · public)
+ *   Provider B — Cloudflare Worker  (Relay B · public)
+ *   Provider C — Vercel Sandbox     (Relay C · Node.js, port exposed via sandbox.domain())
  *
- * Snapshot caching: after the first run, snapshots of the pre-built
- * sandbox states are saved. Subsequent demo runs restore from those
- * snapshots, skipping the slow pnpm install + build step.
+ *   Sandbox 1 (node22):       Finance Agent     → Relay A (Cloudflare)
+ *   Sandbox 2 (python3.13):   Research Agent    → Relay B (Cloudflare)
+ *   Sandbox 3 (node22):       Node.js Relay C   + Compliance Agent
+ *                             ↑ port 8087 exposed as public HTTPS URL
+ *                             ↑ Finance Agent registers Compliance DID doc pointing here
+ *                             ↑ Relay A federates messages to Relay C via HTTP /inbound
+ *
+ * Message flow:
+ *   Finance(CF-A) ──NATS──▶ Research(CF-B)   [Cloudflare ↔ Cloudflare]
+ *   Finance(CF-A) ──HTTP──▶ RelayC(Vercel) ──▶ Compliance(Vercel)  [CF ↔ Vercel Sandbox]
  *
  * Returns { sessionId } — used by GET /api/demo/stream to tail events.
  */
 
 import { type NextRequest, NextResponse } from "next/server";
 import { Sandbox } from "@vercel/sandbox";
+import { sessionLogs, sessionDone } from "@/lib/session-store";
 
+export const runtime = "nodejs";
 export const maxDuration = 120;
-
-// In-process session state shared with /api/demo/stream (same serverless instance).
-// For production scale, back this with Vercel KV instead.
-export const sessionLogs = new Map<string, string[]>();
-export const sessionDone = new Map<string, boolean>();
 
 export async function POST(_req: NextRequest): Promise<NextResponse> {
   const sessionId = crypto.randomUUID();
   sessionLogs.set(sessionId, []);
   sessionDone.set(sessionId, false);
 
-  // Fire and forget — stream route polls sessionLogs independently
   runDemo(sessionId).catch(err => {
     sessionLogs.get(sessionId)?.push(`[error] ${String(err)}`);
     sessionDone.set(sessionId, true);
@@ -45,32 +46,114 @@ async function runDemo(sessionId: string): Promise<void> {
     sessionLogs.get(sessionId)?.push(line);
   }
 
-  const relayAUrl    = process.env.RELAY_A_URL    ?? "https://aamp-relay-a.workers.dev";
-  const relayBUrl    = process.env.RELAY_B_URL    ?? "https://aamp-relay-b.workers.dev";
-  const natsUrl      = process.env.NATS_URL       ?? "";
-  const repoUrl      = process.env.REPO_URL       ?? "";
-  const snapFinance  = process.env.VERCEL_SNAPSHOT_FINANCE;
-  const snapResearch = process.env.VERCEL_SNAPSHOT_RESEARCH;
+  const relayAUrl      = process.env.RELAY_A_URL    ?? "https://aamp-relay-a.workers.dev";
+  const relayBUrl      = process.env.RELAY_B_URL    ?? "https://aamp-relay-b.workers.dev";
+  const natsCreds      = process.env.NATS_CREDS     ?? "";
+  const natsUrl        = process.env.NATS_URL        ?? "";
+  const repoUrl        = process.env.REPO_URL        ?? "";
+  const snapFinance    = process.env.VERCEL_SNAPSHOT_FINANCE;
+  const snapResearch   = process.env.VERCEL_SNAPSHOT_RESEARCH;
+  const snapCompliance = process.env.VERCEL_SNAPSHOT_COMPLIANCE;
 
-  let financeBox:  Sandbox | null = null;
-  let researchBox: Sandbox | null = null;
+  let financeBox:    Sandbox | null = null;
+  let researchBox:   Sandbox | null = null;
+  let complianceBox: Sandbox | null = null;
 
   try {
-    log("[system] Creating Vercel Sandboxes...");
+    log("[system] ══════════════════════════════════════════════════");
+    log("[system] AAMP Cross-Provider Federation Demo");
+    log("[system] Provider A: Cloudflare Workers   (Relay A)");
+    log("[system] Provider B: Cloudflare Workers   (Relay B)");
+    log("[system] Provider C: Vercel Sandbox       (Relay C — Node.js)");
+    log("[system] ══════════════════════════════════════════════════");
 
-    // ── Research Agent sandbox (Company B) ────────────────────────────────
-    // Start first so it's listening before the finance agent probes.
-    log("[system] Booting Research Agent sandbox (python3.13, Company B)...");
+    // ── Sandbox C: Relay C (Node.js) + Compliance Agent ─────────────────
+    // Boot first — needs to expose port and get public URL before Finance starts
+    log("[system] Booting Sandbox C — Node.js Relay + Compliance Agent (Vercel Sandbox)...");
+
+    complianceBox = await Sandbox.create(
+      snapCompliance
+        ? { source: { type: "snapshot", snapshotId: snapCompliance }, timeout: 120_000,
+            ports: [8087],
+            env: { NATS_URL: natsUrl, NATS_CREDS: natsCreds,
+                   RELAY_DOMAIN: "company-c.sandbox", RELAY_PORT: "8087",
+                   AGENT_ID: "compliance-bot-01" } }
+        : { runtime: "node22",
+            source: repoUrl ? { type: "git", url: repoUrl, revision: "feat/cloudflare-deploy" } : undefined,
+            timeout: 120_000,
+            ports: [8087],
+            env: { NATS_URL: natsUrl, NATS_CREDS: natsCreds,
+                   RELAY_DOMAIN: "company-c.sandbox", RELAY_PORT: "8087",
+                   AGENT_ID: "compliance-bot-01" } },
+    );
+
+    // Get public URL for Relay C — Cloudflare Workers can reach this!
+    const relayCPublicUrl = complianceBox.domain(8087);
+    log(`[compliance-relay] Public URL: ${relayCPublicUrl}`);
+    log(`[compliance-relay] Provider: Vercel Sandbox (Node.js) — port 8087 exposed`);
+
+    if (!snapCompliance) {
+      log("[compliance-relay] Installing dependencies (pnpm)...");
+      await complianceBox.runCommand("corepack", ["enable"]);
+      await complianceBox.runCommand("pnpm", ["install", "--frozen-lockfile"]);
+
+      log("[compliance-relay] Building packages...");
+      await complianceBox.runCommand("pnpm", ["--filter", "@aamp/core",     "build"]);
+      await complianceBox.runCommand("pnpm", ["--filter", "@aamp/identity", "build"]);
+      await complianceBox.runCommand("pnpm", ["--filter", "@aamp/sdk",      "build"]);
+    }
+
+    // Start Node.js Relay C (with public URL so it knows its own endpoint for DID docs)
+    log("[compliance-relay] Starting Relay C inside Vercel Sandbox (Node.js)...");
+    const relayEnv = {
+      RELAY_PUBLIC_URL: relayCPublicUrl,
+      RELAY_DOMAIN:     "company-c.sandbox",
+      RELAY_PORT:       "8087",
+      NATS_URL:         natsUrl,
+      NATS_CREDS:       natsCreds,
+      RELAY_STREAM_NAME: "AAMP_MESSAGES_C",
+    };
+    await complianceBox.runCommand({
+      cmd:      "node",
+      args:     ["--import", "tsx/esm", "packages/relay/src/index-node.ts"],
+      cwd:      "/vercel/sandbox",
+      detached: true,
+      env:      relayEnv,
+    });
+
+    await sleep(3_000);
+    log("[compliance-relay] Relay C online ✓");
+
+    // Start compliance agent (connects to localhost relay)
+    const complianceCmd = await complianceBox.runCommand({
+      cmd:      "node",
+      args:     ["--import", "tsx/esm", "examples/compliance-agent/src/index.ts"],
+      cwd:      "/vercel/sandbox",
+      detached: true,
+      env:      {
+        RELAY_C_URL:   "http://localhost:8087",
+        NATS_URL:      natsUrl,
+        NATS_CREDS:    natsCreds,
+        RELAY_DOMAIN:  "company-c.sandbox",
+        AGENT_ID:      "compliance-bot-01",
+      },
+    });
+
+    log("[compliance-agent] Online — waiting for compliance-check tasks via Relay C (Vercel)");
+    await sleep(2_000);
+
+    // ── Sandbox B: Research Agent ────────────────────────────────────────
+    log("[system] Booting Sandbox B — Research Agent (Cloudflare Relay B)...");
 
     researchBox = await Sandbox.create(
       snapResearch
         ? { source: { type: "snapshot", snapshotId: snapResearch }, timeout: 120_000,
-            env: { RELAY_B_URL: relayBUrl, NATS_URL: natsUrl,
+            env: { RELAY_B_URL: relayBUrl, NATS_URL: natsUrl, NATS_CREDS: natsCreds,
                    RELAY_DOMAIN: "company-b.aamp.workers.dev", AGENT_ID: "research-bot-01" } }
         : { runtime: "python3.13",
-            source: repoUrl ? { type: "git", url: repoUrl } : undefined,
+            source: repoUrl ? { type: "git", url: repoUrl, revision: "feat/cloudflare-deploy" } : undefined,
             timeout: 120_000,
-            env: { RELAY_B_URL: relayBUrl, NATS_URL: natsUrl,
+            env: { RELAY_B_URL: relayBUrl, NATS_URL: natsUrl, NATS_CREDS: natsCreds,
                    RELAY_DOMAIN: "company-b.aamp.workers.dev", AGENT_ID: "research-bot-01" } },
     );
 
@@ -83,7 +166,6 @@ async function runDemo(sessionId: string): Promise<void> {
       ]);
     }
 
-    // Start research agent detached — it listens indefinitely for tasks
     const researchCmd = await researchBox.runCommand({
       cmd:      "python",
       args:     ["examples/research-agent/main.py"],
@@ -91,22 +173,26 @@ async function runDemo(sessionId: string): Promise<void> {
       detached: true,
     });
 
-    log("[research-agent] Ready. Listening for PROBE/TASK messages...");
+    log("[research-agent] Online — waiting for tasks via Relay B (Cloudflare)");
+    await sleep(4_000);
 
-    // Give the research agent a head start before finance agent probes
-    await sleep(3_000);
-
-    // ── Finance Agent sandbox (Company A) ─────────────────────────────────
-    log("[system] Booting Finance Agent sandbox (node22, Company A)...");
+    // ── Sandbox A: Finance Agent ─────────────────────────────────────────
+    log("[system] Booting Sandbox A — Finance Agent (Cloudflare Relay A)...");
+    // Pass the REAL public URL for Relay C so Relay A can federate to it via HTTP
+    log(`[system] Relay C public URL injected into Finance Agent: ${relayCPublicUrl}`);
 
     financeBox = await Sandbox.create(
       snapFinance
         ? { source: { type: "snapshot", snapshotId: snapFinance }, timeout: 120_000,
-            env: { RELAY_A_URL: relayAUrl, RELAY_B_URL: relayBUrl, NATS_URL: natsUrl } }
+            env: { RELAY_A_URL: relayAUrl, RELAY_B_URL: relayBUrl,
+                   RELAY_C_URL: relayCPublicUrl,
+                   NATS_URL: natsUrl, NATS_CREDS: natsCreds } }
         : { runtime: "node22",
-            source: repoUrl ? { type: "git", url: repoUrl } : undefined,
+            source: repoUrl ? { type: "git", url: repoUrl, revision: "feat/cloudflare-deploy" } : undefined,
             timeout: 120_000,
-            env: { RELAY_A_URL: relayAUrl, RELAY_B_URL: relayBUrl, NATS_URL: natsUrl } },
+            env: { RELAY_A_URL: relayAUrl, RELAY_B_URL: relayBUrl,
+                   RELAY_C_URL: relayCPublicUrl,
+                   NATS_URL: natsUrl, NATS_CREDS: natsCreds } },
     );
 
     if (!snapFinance) {
@@ -121,9 +207,9 @@ async function runDemo(sessionId: string): Promise<void> {
       await financeBox.runCommand("pnpm", ["--filter", "@aamp/example-finance-agent", "build"]);
     }
 
-    log("[system] Both agents ready. Starting AAMP protocol flow...");
+    log("[system] ✓ All 3 providers online. Initiating cross-provider AAMP protocol flow...");
+    log("[system] Finance(Vercel) → Research(Cloudflare) → Compliance(Vercel Sandbox)");
 
-    // Run the finance agent (probe → task → response → exit)
     const financeCmd = await financeBox.runCommand({
       cmd:      "node",
       args:     ["examples/finance-agent/dist/index.js"],
@@ -131,32 +217,37 @@ async function runDemo(sessionId: string): Promise<void> {
       detached: true,
     });
 
-    // Stream logs from both agents concurrently into sessionLogs
+    // Stream logs from all three concurrently
     await Promise.all([
-      streamLogs(financeCmd,  log),
-      streamLogs(researchCmd, log),
+      streamLogs(financeCmd,    log),
+      streamLogs(researchCmd,   log),
+      streamLogs(complianceCmd, log),
     ]);
 
-    // On first run (no snapshots yet), create them for fast subsequent runs
-    if (!snapFinance || !snapResearch) {
+    // Snapshot all three on first run for fast reruns
+    if (!snapFinance || !snapResearch || !snapCompliance) {
       log("[system] Creating snapshots for faster future runs...");
       await Promise.allSettled([
-        financeBox.snapshot().then(s  => log(`[system] Finance snapshot: ${s.snapshotId}`)).catch(() => {}),
-        researchBox.snapshot().then(s => log(`[system] Research snapshot: ${s.snapshotId}`)).catch(() => {}),
+        financeBox.snapshot().then(s    => log(`[system] Finance snapshot:    ${s.snapshotId}`)).catch(() => {}),
+        researchBox.snapshot().then(s   => log(`[system] Research snapshot:   ${s.snapshotId}`)).catch(() => {}),
+        complianceBox.snapshot().then(s => log(`[system] Compliance snapshot: ${s.snapshotId}`)).catch(() => {}),
       ]);
+      log("[system] Add snapshot IDs to Vercel env vars for ~10s restarts:");
+      log("[system]   VERCEL_SNAPSHOT_FINANCE / VERCEL_SNAPSHOT_RESEARCH / VERCEL_SNAPSHOT_COMPLIANCE");
     }
   } finally {
-    log("[system] Demo complete. Stopping sandboxes...");
+    log("[system] Demo complete. Stopping all sandboxes...");
     await Promise.allSettled([
       financeBox?.stop(),
       researchBox?.stop(),
+      complianceBox?.stop(),
     ]);
     sessionDone.set(sessionId, true);
   }
 }
 
 async function streamLogs(
-  command: Awaited<ReturnType<Sandbox["runCommand"]>>,
+  command: { logs(): AsyncIterable<{ data: string }> },
   log: (line: string) => void,
 ): Promise<void> {
   try {
@@ -165,7 +256,7 @@ async function streamLogs(
       if (line) log(line);
     }
   } catch {
-    // Sandbox stopped or stream ended — non-fatal
+    // Non-fatal — sandbox may have stopped
   }
 }
 

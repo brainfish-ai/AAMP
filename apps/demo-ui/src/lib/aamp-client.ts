@@ -70,7 +70,7 @@ async function signEnvelope(
   privateKey: CryptoKey,
 ): Promise<Envelope> {
   const message = canonicalize(env);
-  const sigBuffer = await crypto.subtle.sign("Ed25519", privateKey, message);
+  const sigBuffer = await crypto.subtle.sign("Ed25519", privateKey, message as unknown as ArrayBuffer);
   const sig = btoa(String.fromCharCode(...new Uint8Array(sigBuffer)))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
   return { ...env, signature: sig };

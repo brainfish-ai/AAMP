@@ -5,13 +5,13 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 RELAY_DOMAIN      = "company-a.aamp.workers.dev"
-RELAY_PUBLIC_URL  = "https://aamp-relay-a.YOUR_SUBDOMAIN.workers.dev"
+RELAY_PUBLIC_URL  = "https://aamp-relay-a.brainfish-pty-ltd.workers.dev"
 RELAY_STREAM_NAME = "AAMP_MESSAGES_A"
 
 # Create with: wrangler kv:namespace create KV_AGENTS
 [[kv_namespaces]]
 binding = "KV_AGENTS"
-id      = "REPLACE_WITH_KV_NAMESPACE_ID"
+id      = "3325ac9ada974212af437a7944495b7a"
 
 # Secrets (never commit values) — set with:
 #   wrangler secret put NATS_URL
@@ -25,11 +25,11 @@ name = "aamp-relay-b"
 
 [env.relay-b.vars]
 RELAY_DOMAIN      = "company-b.aamp.workers.dev"
-RELAY_PUBLIC_URL  = "https://aamp-relay-b.YOUR_SUBDOMAIN.workers.dev"
+RELAY_PUBLIC_URL  = "https://aamp-relay-b.brainfish-pty-ltd.workers.dev"
 RELAY_STREAM_NAME = "AAMP_MESSAGES_B"
 
 # Create a separate KV namespace for relay-b:
 #   wrangler kv:namespace create KV_AGENTS --env relay-b
 [[env.relay-b.kv_namespaces]]
 binding = "KV_AGENTS"
-id      = "REPLACE_WITH_RELAY_B_KV_NAMESPACE_ID"
+id      = "5a62564e6c894977b5e57cabcac4a16f"

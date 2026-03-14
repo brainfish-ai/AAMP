@@ -166,11 +166,13 @@ echo ""
 
 cd apps/demo-ui
 
-info "Authenticating with Vercel..."
-vercel whoami 2>/dev/null || vercel login
+VERCEL_SCOPE="${VERCEL_SCOPE:-brainfish}"
 
-info "Linking project to Vercel..."
-vercel link --yes 2>/dev/null || vercel link
+info "Authenticating with Vercel (scope: $VERCEL_SCOPE)..."
+vercel whoami --scope "$VERCEL_SCOPE" 2>/dev/null || vercel login
+
+info "Linking project to Vercel (team: $VERCEL_SCOPE)..."
+vercel link --yes --scope "$VERCEL_SCOPE" 2>/dev/null || vercel link --scope "$VERCEL_SCOPE"
 
 # ── Set Vercel environment variables ─────────────────────────────────────────
 
@@ -178,21 +180,22 @@ info "Setting Vercel environment variables..."
 set_vercel_env() {
   local key="$1" value="$2"
   # Remove existing value then add fresh (avoid duplicate error)
-  vercel env rm "$key" production --yes 2>/dev/null || true
-  echo "$value" | vercel env add "$key" production
+  vercel env rm "$key" production --yes --scope "$VERCEL_SCOPE" 2>/dev/null || true
+  echo "$value" | vercel env add "$key" production --scope "$VERCEL_SCOPE"
 }
 
 set_vercel_env "RELAY_A_URL" "$RELAY_A_URL"
 set_vercel_env "RELAY_B_URL" "$RELAY_B_URL"
 set_vercel_env "NATS_URL"    "$NATS_URL"
+set_vercel_env "NATS_CREDS"  "$NATS_CREDS"
 set_vercel_env "REPO_URL"    "$REPO_URL"
 
 success "Vercel environment variables set"
 
 # ── Deploy ────────────────────────────────────────────────────────────────────
 
-info "Deploying demo-ui to Vercel (production)..."
-DEMO_URL=$(vercel deploy --prod 2>&1 | grep -oE 'https://[a-zA-Z0-9._-]+\.vercel\.app' | head -1)
+info "Deploying demo-ui to Vercel (production, scope: $VERCEL_SCOPE)..."
+DEMO_URL=$(vercel deploy --prod --scope "$VERCEL_SCOPE" 2>&1 | grep -oE 'https://[a-zA-Z0-9._-]+\.vercel\.app' | head -1)
 success "Demo UI deployed: ${DEMO_URL:-<check Vercel dashboard>}"
 
 cd "$REPO_ROOT"

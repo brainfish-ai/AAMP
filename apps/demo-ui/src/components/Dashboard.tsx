@@ -32,7 +32,7 @@ export function Dashboard() {
   const [relayA,     setRelayA]     = useState<RelayHealth>({ status: "checking" });
   const [relayB,     setRelayB]     = useState<RelayHealth>({ status: "checking" });
   const [running,    setRunning]    = useState(false);
-  const [result,     setResult]     = useState<unknown>(null);
+  const [result,     setResult]     = useState<Record<string, unknown> | null>(null);
   const [error,      setError]      = useState<string | null>(null);
 
   const ctxRef   = useRef<DemoContext | null>(null);
@@ -167,7 +167,7 @@ export function Dashboard() {
 
       // Task
       const taskResult = await runTask(ctx, onStep);
-      setResult(taskResult);
+      setResult((taskResult as Record<string, unknown>) ?? null);
     } catch (e) {
       setStep("error");
       setError(String(e));
@@ -253,7 +253,7 @@ export function Dashboard() {
         </div>
 
         {/* Error banner */}
-        {error && (
+        {error !== null && (
           <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
             {error}
           </div>
@@ -288,18 +288,18 @@ export function Dashboard() {
         </div>
 
         {/* Result panel */}
-        {result && (
+        {result !== null && (
           <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-5">
             <div className="flex items-center gap-2 mb-3">
               <div className="h-2 w-2 rounded-full bg-emerald-400" />
               <span className="text-sm font-semibold text-emerald-300">Task Result from Research Bot</span>
             </div>
             {(() => {
-              const r = result as Record<string, unknown>;
+              const r = result;
               const out = r.output as Record<string, unknown> | undefined;
               return out ? (
                 <div className="grid gap-4 sm:grid-cols-2">
-                  {out.summary && (
+                  {out.summary != null && (
                     <div className="rounded-xl bg-black/30 p-4 border border-white/5 sm:col-span-2">
                       <p className="text-[10px] uppercase tracking-widest text-zinc-400 mb-2">Summary</p>
                       <p className="text-sm text-zinc-200 leading-relaxed">{String(out.summary)}</p>
@@ -318,7 +318,7 @@ export function Dashboard() {
                       </ul>
                     </div>
                   )}
-                  {out.agentDid && (
+                  {out.agentDid != null && (
                     <div className="rounded-xl bg-black/30 p-4 border border-white/5">
                       <p className="text-[10px] uppercase tracking-widest text-zinc-400 mb-2">Processed By</p>
                       <p className="font-mono text-xs text-violet-300 break-all">{String(out.agentDid)}</p>
