@@ -186,12 +186,11 @@ async function runDemo(sessionId: string): Promise<void> {
     }
 
     if (!snapResearch) {
-      log("[research-agent] Installing Python dependencies...");
+      log("[research-agent] Installing Python runtime dependencies (nats-py, aiohttp, etc.)...");
+      // Install only external deps — aamp_sdk is loaded via PYTHONPATH (no pip install needed)
       await researchBox.runCommand("pip", [
-        "install", "--quiet", "-e", "packages/sdk-py/",
-      ]);
-      await researchBox.runCommand("pip", [
-        "install", "--quiet", "-r", "examples/research-agent/requirements.txt",
+        "install", "--quiet",
+        "nats-py>=2.9.0", "cryptography>=43.0.0", "aiohttp>=3.11.0", "pydantic>=2.10.0",
       ]);
     }
 
@@ -204,6 +203,7 @@ async function runDemo(sessionId: string): Promise<void> {
         RELAY_B_URL:     relayBUrl,
         NATS_URL:        natsUrl,
         NATS_CREDS_FILE: natsCreds ? "/tmp/nats.creds" : "",
+        PYTHONPATH:      "/vercel/sandbox/packages/sdk-py",
       }),
     });
 
@@ -227,6 +227,7 @@ async function runDemo(sessionId: string): Promise<void> {
                    RELAY_C_URL: relayCPublicUrl, NATS_URL: natsUrl, NATS_CREDS: natsCreds }) },
     );
 
+    // Write NATS creds for finance sandbox
     if (natsCreds) {
       const credsB64 = Buffer.from(natsCreds).toString("base64");
       await financeBox.runCommand({
@@ -236,24 +237,13 @@ async function runDemo(sessionId: string): Promise<void> {
       });
     }
 
-    if (!snapFinance) {
-      log("[finance-agent] Installing dependencies (pnpm)...");
-      await financeBox.runCommand("corepack", ["enable"]);
-      await financeBox.runCommand("pnpm", ["install", "--no-frozen-lockfile"]);
-
-      log("[finance-agent] Building packages...");
-      await financeBox.runCommand("pnpm", ["--filter", "@aamp/core",     "build"]);
-      await financeBox.runCommand("pnpm", ["--filter", "@aamp/identity", "build"]);
-      await financeBox.runCommand("pnpm", ["--filter", "@aamp/sdk",      "build"]);
-      await financeBox.runCommand("pnpm", ["--filter", "@aamp/example-finance-agent", "build"]);
-    }
-
     log("[system] ✓ All 3 providers online. Initiating cross-provider AAMP protocol flow...");
     log("[system] Finance(Vercel) → Research(Cloudflare) → Compliance(Vercel Sandbox)");
 
+    // Run pre-built bundle — no pnpm install or build step needed
     const financeCmd = await financeBox.runCommand({
       cmd:      "node",
-      args:     ["examples/finance-agent/dist/index.js"],
+      args:     ["examples/finance-agent/finance-bundle.cjs"],
       cwd:      "/vercel/sandbox",
       detached: true,
       env:      makeEnv({
