@@ -64,8 +64,16 @@ const config: RelayConfig = {
 
 // ─── NATS connect (TCP, not WebSocket) ───────────────────────────────────────
 
+function toTcpNatsUrl(url: string): string {
+  // The nats package is TCP-only. Convert WebSocket URLs to their TCP equivalents
+  // so Node.js relay/agents can connect to Synadia Cloud from non-Workers runtimes.
+  if (url.startsWith("wss://")) return url.replace("wss://", "tls://");
+  if (url.startsWith("ws://"))  return url.replace("ws://",  "nats://");
+  return url;
+}
+
 async function connectNats(): Promise<{ nc: NatsConnection; jsm: JetStreamManager; js: JetStreamClient }> {
-  const opts: Parameters<typeof connect>[0] = { servers: NATS_URL };
+  const opts: Parameters<typeof connect>[0] = { servers: toTcpNatsUrl(NATS_URL) };
 
   if (NATS_CREDS) {
     const creds = NATS_CREDS.trim();
@@ -278,9 +286,10 @@ async function routeEnvelope(
   resolver:   DIDResolver,
 ): Promise<void> {
   const isReplyType = [MessageType.RESPONSE, MessageType.PROBE_RESPONSE, MessageType.STATUS, MessageType.CONFIRM, MessageType.CANCEL].includes(envelope.messageType as MessageType);
-  const localPrefix = `aamp.${DOMAIN}.`;
 
-  if (envelope.replyToMailbox?.startsWith(localPrefix) && isReplyType) {
+  // All AAMP relays share the same NATS cluster — publish directly to replyToMailbox
+  // even for cross-domain subjects (e.g. aamp.company-a.workers.dev.finance-bot-01.inbox).
+  if (isReplyType && envelope.replyToMailbox) {
     nats.nc.publish(envelope.replyToMailbox, new TextEncoder().encode(JSON.stringify(envelope)));
     return;
   }

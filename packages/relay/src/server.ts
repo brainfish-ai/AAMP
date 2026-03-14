@@ -339,7 +339,10 @@ async function routeEnvelope(
   federation: FederationRouter,
   registry:   AgentRegistry,
 ): Promise<void> {
-  // Priority 1: replyToMailbox points to a local NATS subject — fast path for responses
+  // Priority 1: response/reply types — publish directly to replyToMailbox on NATS.
+  // All AAMP relays share the same NATS cluster (Synadia), so a relay can publish
+  // to ANY relay's subject (e.g. aamp.company-a.workers.dev.finance-bot-01.inbox)
+  // regardless of domain. This is what enables cross-provider response routing.
   const isReplyType = (
     envelope.messageType === MessageType.RESPONSE      ||
     envelope.messageType === MessageType.PROBE_RESPONSE ||
@@ -347,8 +350,7 @@ async function routeEnvelope(
     envelope.messageType === MessageType.CONFIRM       ||
     envelope.messageType === MessageType.CANCEL
   );
-  const localPrefix = `aamp.${config.domain}.`;
-  if (envelope.replyToMailbox?.startsWith(localPrefix) && isReplyType) {
+  if (isReplyType && envelope.replyToMailbox) {
     const subj    = envelope.replyToMailbox;
     const payload = new TextEncoder().encode(JSON.stringify(envelope));
     try {

@@ -295,7 +295,17 @@ export class AampAgent {
   // ─────────────────────────────────────────────────────────────
 
   private async connectViaNats(): Promise<void> {
-    this.nc  = await connect({ servers: this.opts.natsUrl! });
+    // The nats package uses TCP (nats:// / tls://). In Cloudflare Workers,
+    // nats.ws handles wss:// URLs. For Node.js environments, transform
+    // wss:// → tls:// and ws:// → nats:// so the TCP client can connect.
+    const rawUrl = this.opts.natsUrl!;
+    const serverUrl = rawUrl.startsWith("wss://")
+      ? rawUrl.replace("wss://", "tls://")
+      : rawUrl.startsWith("ws://")
+        ? rawUrl.replace("ws://", "nats://")
+        : rawUrl;
+
+    this.nc  = await connect({ servers: serverUrl });
     const subject = `aamp.${this.domain}.${this.agentId}.inbox`;
     this.sub = this.nc.subscribe(subject);
 
@@ -424,18 +434,21 @@ export class AampAgent {
     if (!replyTo) return;
 
     const unsigned: Omit<Envelope, "signature"> = {
-      messageId:    uuidv7(),
-      senderDid:    this.opts.did,
-      recipientDid: originalEnvelope.senderDid,
-      taskId:       originalEnvelope.taskId,
-      rootTaskId:   originalEnvelope.rootTaskId ?? originalEnvelope.taskId,
-      routingMode:  RoutingMode.SUPERVISED_TRANSFER,
-      messageType:  MessageType.RESPONSE,
-      status:       result.success ? TaskStatus.COMPLETED : TaskStatus.FAILED,
-      payload:      result,
-      contentType:  "application/json",
-      createdAt:    Date.now(),
-      aampVersion:  AAMP_VERSION,
+      messageId:      uuidv7(),
+      senderDid:      this.opts.did,
+      recipientDid:   originalEnvelope.senderDid,
+      taskId:         originalEnvelope.taskId,
+      rootTaskId:     originalEnvelope.rootTaskId ?? originalEnvelope.taskId,
+      // Carry replyToMailbox forward so the receiving relay can route the response
+      // back to the correct NATS subject even across relay domain boundaries.
+      replyToMailbox: originalEnvelope.replyToMailbox,
+      routingMode:    RoutingMode.SUPERVISED_TRANSFER,
+      messageType:    MessageType.RESPONSE,
+      status:         result.success ? TaskStatus.COMPLETED : TaskStatus.FAILED,
+      payload:        result,
+      contentType:    "application/json",
+      createdAt:      Date.now(),
+      aampVersion:    AAMP_VERSION,
     };
 
     const envelope = await signEnvelope(unsigned, this.opts.privateKey);
