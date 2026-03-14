@@ -230,7 +230,9 @@ export function Dashboard() {
           <div>
             <h2 className="text-2xl font-bold text-white">Cross-Company Message Flow</h2>
             <p className="text-sm text-zinc-400 mt-1">
-              Finance Bot (Company A · TypeScript) ↔ Research Bot (Company B · Python) via federated NATS relays
+              <span className="text-cyan-400 font-medium">Intra</span>: Finance Bot ↔ Research Bot via Cloudflare Workers (NATS federation)
+              {" · "}
+              <span className="text-amber-400 font-medium">Inter</span>: Finance Bot → Compliance Bot via Vercel Sandbox (cross-provider)
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">

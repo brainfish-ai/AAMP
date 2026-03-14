@@ -244,12 +244,12 @@ export function FlowDiagram({ step }: Props) {
   const nodes = useMemo<Node[]>(() => BASE_NODES.map(n => {
     const active = activeNodes.includes(n.id);
     switch (n.id) {
-      case "finance":    return { ...n, data: { label: "Finance Bot",    role: "Company A · AAMP Client",  tech: "TypeScript", provider: "Vercel",  scheme: "blue",   active } };
-      case "relay_a":    return { ...n, data: { label: "Relay A",        domain: "company-a.aamp",          badge: "CF Worker", provider: "CF",      scheme: "cyan",   active } };
-      case "relay_b":    return { ...n, data: { label: "Relay B",        domain: "company-b.aamp",          badge: "CF Worker", provider: "CF",      scheme: "emerald",active } };
-      case "research":   return { ...n, data: { label: "Research Bot",   role: "Company B · PDF Analyst",   tech: "Python",     provider: "Vercel",  scheme: "violet", active } };
-      case "relay_c":    return { ...n, data: { label: "Relay C",        domain: "company-c.sandbox",       badge: "Node.js",   provider: "Vercel",  scheme: "amber",  active } };
-      case "compliance": return { ...n, data: { label: "Compliance Bot", role: "Company C · Reg Checker",   tech: "TypeScript", provider: "Vercel",  scheme: "amber",  active } };
+      case "finance":    return { ...n, data: { label: "Finance Bot",    role: "Company A · AAMP Client",  tech: "TypeScript", provider: "Intra",  scheme: "blue",   active } };
+      case "relay_a":    return { ...n, data: { label: "Relay A",        domain: "company-a.aamp",          badge: "Intra",     provider: "CF",      scheme: "cyan",   active } };
+      case "relay_b":    return { ...n, data: { label: "Relay B",        domain: "company-b.aamp",          badge: "Intra",     provider: "CF",      scheme: "emerald",active } };
+      case "research":   return { ...n, data: { label: "Research Bot",   role: "Company B · PDF Analyst",   tech: "Python",     provider: "Intra",   scheme: "violet", active } };
+      case "relay_c":    return { ...n, data: { label: "Relay C",        domain: "company-c.sandbox",       badge: "Inter",     provider: "Vercel",  scheme: "amber",  active } };
+      case "compliance": return { ...n, data: { label: "Compliance Bot", role: "Company C · Reg Checker",   tech: "TypeScript", provider: "Inter",   scheme: "amber",  active } };
       default: return n;
     }
   }), [activeNodes]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -257,41 +257,41 @@ export function FlowDiagram({ step }: Props) {
   const edges = useMemo<Edge[]>(() => [
     // Row 1 — Phase 1 (Finance ↔ Research via Cloudflare)
     { id: "e-fa-ra",  source: "finance",    target: "relay_a",    type: "aEdge", data: { active: activeEdges.includes("e-fa-ra"),   color: P1_FWD, label: "POST /send",    curv: 0.2 } },
-    { id: "e-ra-rb",  source: "relay_a",    target: "relay_b",    type: "aEdge", data: { active: activeEdges.includes("e-ra-rb"),   color: P1_FWD, label: "NATS JetStream", curv: 0.1 } },
+    { id: "e-ra-rb",  source: "relay_a",    target: "relay_b",    type: "aEdge", data: { active: activeEdges.includes("e-ra-rb"),   color: P1_FWD, label: "Intra (NATS)", curv: 0.1 } },
     { id: "e-rb-res", source: "relay_b",    target: "research",   type: "aEdge", data: { active: activeEdges.includes("e-rb-res"),  color: P1_FWD, label: "SSE deliver",   curv: 0.2 } },
     { id: "e-res-rb", source: "research",   target: "relay_b",    type: "aEdge", data: { active: activeEdges.includes("e-res-rb"),  color: P1_RET, label: "POST /send",    curv: 0.55 } },
     { id: "e-rb-ra",  source: "relay_b",    target: "relay_a",    type: "aEdge", sourceHandle: "ls", targetHandle: "rt", data: { active: activeEdges.includes("e-rb-ra"),  color: P1_RET, label: "HTTP /inbound", curv: 0.5 } },
     { id: "e-ra-fa",  source: "relay_a",    target: "finance",    type: "aEdge", data: { active: activeEdges.includes("e-ra-fa"),   color: P1_RET, label: "SSE deliver",   curv: 0.55 } },
     // Vertical — Phase 2 cross-provider (Cloudflare A → Vercel Sandbox C)
     { id: "e-ra-rc",  source: "relay_a",    target: "relay_c",    type: "aEdge", sourceHandle: "bs", targetHandle: "tt",
-      data: { active: activeEdges.includes("e-ra-rc"),   color: P2_FWD, label: "HTTP /inbound", curv: 0.0 } },
+      data: { active: activeEdges.includes("e-ra-rc"),   color: P2_FWD, label: "Inter (HTTP)", curv: 0.0 } },
     // Row 2 — Phase 2 (Finance → Compliance via Relay C Vercel Sandbox)
     { id: "e-rc-comp",source: "relay_c",    target: "compliance", type: "aEdge", data: { active: activeEdges.includes("e-rc-comp"),  color: P2_FWD, label: "SSE deliver",   curv: 0.2 } },
     { id: "e-comp-rc",source: "compliance", target: "relay_c",    type: "aEdge", data: { active: activeEdges.includes("e-comp-rc"),  color: P2_RET, label: "POST /send",    curv: 0.55 } },
     { id: "e-rc-ra",  source: "relay_c",    target: "relay_a",    type: "aEdge", sourceHandle: "tt", targetHandle: "bs",
-      data: { active: activeEdges.includes("e-rc-ra"),   color: P2_RET, label: "NATS / HTTP",   curv: 0.0 } },
+      data: { active: activeEdges.includes("e-rc-ra"),   color: P2_RET, label: "Inter (NATS)",  curv: 0.0 } },
   ], [activeEdges]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const stepMeta: Record<FlowStep, { label: string; variant: "idle" | "active" | "done" | "error" }> = {
     idle:                      { label: "Idle — click Run Full Demo",                              variant: "idle"   },
     registering:               { label: "Registering Finance Agent with Relay A…",                 variant: "active" },
-    probing:                   { label: "PROBE → Research Bot (Cloudflare A → B)",                 variant: "active" },
-    probe_sent:                { label: "PROBE dispatched → Relay A",                              variant: "active" },
-    probe_federated:           { label: "PROBE federating Relay A → Relay B (NATS)",               variant: "active" },
-    probe_delivered:           { label: "PROBE delivered to Research Bot",                         variant: "active" },
-    probe_response:            { label: "PROBE_RESPONSE ✓ — returning via Cloudflare",             variant: "active" },
-    task_sent:                 { label: "TASK dispatched → Relay A (Cloudflare)",                  variant: "active" },
-    task_federated:            { label: "TASK federating A → B via NATS JetStream",                variant: "active" },
-    task_delivered:            { label: "TASK delivered to Research Bot",                          variant: "active" },
-    task_processing:           { label: "Research Bot processing document…",                        variant: "active" },
-    task_response:             { label: "RESPONSE flowing back via Cloudflare",                    variant: "active" },
-    research_done:             { label: "✓ Phase 1 complete — starting Phase 2",                   variant: "active" },
-    compliance_probing:        { label: "PROBE → Compliance Bot (Cloudflare → Vercel Sandbox)",    variant: "active" },
-    compliance_probe_response: { label: "PROBE_RESPONSE ✓ — Relay C accepted (Vercel Sandbox)",   variant: "active" },
-    compliance_task_sent:      { label: "Compliance-check TASK → Relay A → Relay C",               variant: "active" },
-    compliance_processing:     { label: "Compliance Bot running checks… (Vercel Sandbox)",         variant: "active" },
-    compliance_done:           { label: "✓ Compliance check done — 3-provider flow complete!",     variant: "done"   },
-    completed:                 { label: "✓ Full cross-provider demo complete",                      variant: "done"   },
+    probing:                   { label: "PROBE → Research Bot [Intra: Relay A → B]",               variant: "active" },
+    probe_sent:                { label: "PROBE dispatched → Relay A [Intra]",                      variant: "active" },
+    probe_federated:           { label: "PROBE federating Relay A → Relay B via NATS [Intra]",     variant: "active" },
+    probe_delivered:           { label: "PROBE delivered to Research Bot [Intra]",                 variant: "active" },
+    probe_response:            { label: "PROBE_RESPONSE ✓ — returning via Intra federation",       variant: "active" },
+    task_sent:                 { label: "TASK dispatched → Relay A [Intra]",                       variant: "active" },
+    task_federated:            { label: "TASK federating A → B via NATS JetStream [Intra]",        variant: "active" },
+    task_delivered:            { label: "TASK delivered to Research Bot [Intra]",                  variant: "active" },
+    task_processing:           { label: "Research Bot processing document… [Intra]",                variant: "active" },
+    task_response:             { label: "RESPONSE flowing back via Intra federation",              variant: "active" },
+    research_done:             { label: "✓ Intra complete — starting Inter (cross-provider)",      variant: "active" },
+    compliance_probing:        { label: "PROBE → Compliance Bot [Inter: Relay A → Relay C]",       variant: "active" },
+    compliance_probe_response: { label: "PROBE_RESPONSE ✓ — Relay C accepted [Inter]",            variant: "active" },
+    compliance_task_sent:      { label: "Compliance-check TASK → Relay A → Relay C [Inter]",       variant: "active" },
+    compliance_processing:     { label: "Compliance Bot running checks… [Inter: Vercel Sandbox]",  variant: "active" },
+    compliance_done:           { label: "✓ Inter complete — Intra + Inter flow done!",             variant: "done"   },
+    completed:                 { label: "✓ Intra + Inter cross-provider demo complete",            variant: "done"   },
     error:                     { label: "Error — check event log",                                  variant: "error"  },
   };
 
@@ -301,24 +301,24 @@ export function FlowDiagram({ step }: Props) {
     <div className="relative w-full rounded-2xl overflow-hidden border border-white/[0.07] bg-zinc-950" style={{ height: 380 }}>
       {/* Swim-lane background */}
       <div className="absolute inset-0 pointer-events-none select-none" style={{ zIndex: 0 }}>
-        {/* Row 1 — Cloudflare providers */}
+        {/* Row 1 — Intra-provider (Cloudflare Workers) */}
         <div className="absolute left-0 right-0 border-b border-white/[0.04]" style={{ top: 0, height: "53%" }}>
           <div className="absolute inset-0 flex">
             <div className="w-[25%] border-r border-blue-500/10 bg-blue-950/10 flex items-end pb-2 pl-3">
               <span className="text-[7px] font-bold uppercase tracking-[0.2em] text-blue-500/40">Company A</span>
             </div>
             <div className="flex-1 bg-cyan-950/5 flex items-end pb-2 pl-3">
-              <span className="text-[7px] font-bold uppercase tracking-[0.2em] text-zinc-500/50">Cloudflare Workers Federation</span>
+              <span className="text-[7px] font-bold uppercase tracking-[0.2em] text-cyan-500/40">Intra-Provider Federation</span>
             </div>
             <div className="w-[25%] border-l border-violet-500/10 bg-violet-950/10 flex items-end pb-2 pl-3">
               <span className="text-[7px] font-bold uppercase tracking-[0.2em] text-violet-500/40">Company B</span>
             </div>
           </div>
         </div>
-        {/* Row 2 — Vercel Sandbox */}
+        {/* Row 2 — Inter-provider (Vercel Sandbox) */}
         <div className="absolute left-0 right-[40%] bottom-0" style={{ top: "53%" }}>
           <div className="absolute inset-0 bg-amber-950/10 border-r border-amber-500/10 flex items-center pb-2 pl-3">
-            <span className="text-[7px] font-bold uppercase tracking-[0.2em] text-amber-500/40">Company C — Vercel Sandbox</span>
+            <span className="text-[7px] font-bold uppercase tracking-[0.2em] text-amber-500/40">Company C — Inter-Provider</span>
           </div>
         </div>
       </div>
@@ -366,10 +366,10 @@ export function FlowDiagram({ step }: Props) {
         <Panel position="bottom-right" style={{ zIndex: 10 }}>
           <div className="mb-2 mr-2 bg-zinc-950/80 backdrop-blur-sm border border-white/[0.07] rounded-xl px-3 py-2 flex flex-col gap-1.5">
             <p className="text-[7px] uppercase tracking-[0.2em] text-zinc-400 mb-0.5 font-semibold">Protocol</p>
-            <LegendRow color={P1_FWD} label="CF→CF request (NATS)" />
-            <LegendRow color={P1_RET} label="CF→CF response" />
-            <LegendRow color={P2_FWD} label="CF→Vercel forward" />
-            <LegendRow color={P2_RET} label="Vercel→CF return" />
+            <LegendRow color={P1_FWD} label="Intra request (NATS)" />
+            <LegendRow color={P1_RET} label="Intra response" />
+            <LegendRow color={P2_FWD} label="Inter forward (cross-provider)" />
+            <LegendRow color={P2_RET} label="Inter return (cross-provider)" />
           </div>
         </Panel>
       </ReactFlow>
