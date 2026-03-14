@@ -8,7 +8,11 @@ export interface WorkerEnv {
   KV_AGENTS: KVNamespace;
   /** NATS server WebSocket URL (e.g. wss://connect.ngs.global) */
   NATS_URL: string;
-  /** NKey seed credentials from Synadia Cloud (optional for open servers) */
+  /**
+   * Synadia Cloud auth — either:
+   *   - A simple access token string (free Personal Plan — copy from dashboard)
+   *   - A full .creds file contents (JWT + NKey, paid plans)
+   */
   NATS_CREDS?: string;
   /** Domain this relay is authoritative for */
   RELAY_DOMAIN?: string;

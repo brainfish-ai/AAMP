@@ -129,11 +129,13 @@ success "wrangler.toml updated"
 # ── Set Worker secrets ────────────────────────────────────────────────────────
 
 info "Setting secrets for relay-a..."
-echo "$NATS_URL"    | wrangler secret put NATS_URL
+echo "$NATS_URL"          | wrangler secret put NATS_URL
+# NATS_CREDS accepts either a plain access token (Synadia free tier)
+# or a full .creds file (paid) — the relay auto-detects which format.
 printf '%s' "$NATS_CREDS" | wrangler secret put NATS_CREDS
 
 info "Setting secrets for relay-b..."
-echo "$NATS_URL"    | wrangler secret put NATS_URL  --env relay-b
+echo "$NATS_URL"          | wrangler secret put NATS_URL  --env relay-b
 printf '%s' "$NATS_CREDS" | wrangler secret put NATS_CREDS --env relay-b
 
 # ── Deploy ────────────────────────────────────────────────────────────────────

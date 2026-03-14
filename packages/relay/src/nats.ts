@@ -15,6 +15,7 @@
 import {
   connect,
   credsAuthenticator,
+  tokenAuthenticator,
   type NatsConnection,
   type JetStreamManager,
   type JetStreamClient,
@@ -35,10 +36,17 @@ export async function connectNats(config: RelayConfig): Promise<NatsContext> {
     servers: config.natsUrl,
   };
 
+  // Synadia Cloud free tier shows a simple "access token" in the dashboard.
+  // Full .creds files (JWT + NKey) are also supported for paid plans.
   if (config.natsCreds) {
-    opts.authenticator = credsAuthenticator(
-      new TextEncoder().encode(config.natsCreds),
-    );
+    const creds = config.natsCreds.trim();
+    if (creds.startsWith("-----BEGIN NATS")) {
+      // .creds file format (JWT + NKey seed)
+      opts.authenticator = credsAuthenticator(new TextEncoder().encode(creds));
+    } else {
+      // Simple access token (free Personal Plan)
+      opts.authenticator = tokenAuthenticator(creds);
+    }
   }
 
   const nc  = await connect(opts);
