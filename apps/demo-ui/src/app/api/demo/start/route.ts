@@ -87,8 +87,9 @@ async function runDemo(sessionId: string): Promise<void> {
     // Boot first — needs to expose port and get public URL before Finance starts
     log("[system] Booting Sandbox C — Node.js Relay + Compliance Agent (Vercel Sandbox)...");
 
+    // Only pass minimal env at sandbox creation — credentials go via /tmp/nats.creds file
     const complianceEnv = makeEnv({
-      NATS_URL: natsUrl, NATS_CREDS: natsCreds,
+      NATS_URL: natsUrl,
       RELAY_DOMAIN: "company-b.sandbox", RELAY_PORT: "8087",
       AGENT_ID: "compliance-bot-01",
     });
@@ -110,13 +111,12 @@ async function runDemo(sessionId: string): Promise<void> {
     log(`[compliance-relay] Public URL: ${relayCPublicUrl}`);
     log(`[compliance-relay] Provider: Vercel Sandbox (Node.js) — port 8087 exposed`);
 
-    // Write NATS credentials to a temp file — pre-built bundles read from NATS_CREDS_FILE
-    // to avoid multiline env var truncation in the Sandbox API.
+    // Write NATS credentials via base64 to preserve multiline content
     if (natsCreds) {
       const credsB64 = Buffer.from(natsCreds).toString("base64");
       await complianceBox.runCommand({
         cmd:  "bash",
-        args: ["-c", `echo '${credsB64}' | base64 -d > /tmp/nats.creds && chmod 600 /tmp/nats.creds`],
+        args: ["-c", `printf '%s' '${credsB64}' | base64 -d > /tmp/nats.creds && chmod 600 /tmp/nats.creds && wc -l /tmp/nats.creds`],
         cwd:  "/vercel/sandbox",
       });
       log("[compliance-relay] NATS creds written to /tmp/nats.creds");
@@ -166,21 +166,20 @@ async function runDemo(sessionId: string): Promise<void> {
     researchBox = await Sandbox.create(
       snapResearch
         ? { source: { type: "snapshot", snapshotId: snapResearch }, timeout: 120_000,
-            env: makeEnv({ RELAY_B_URL: relayBUrl, NATS_URL: natsUrl, NATS_CREDS: natsCreds,
+            env: makeEnv({ RELAY_B_URL: relayBUrl, NATS_URL: natsUrl,
                    RELAY_DOMAIN: "company-a.aamp.workers.dev", AGENT_ID: "research-bot-01" }) }
         : { runtime: "python3.13",
             source: repoUrl ? { type: "git", url: repoUrl, revision: "feat/cloudflare-deploy" } : undefined,
             timeout: 120_000,
-            env: makeEnv({ RELAY_B_URL: relayBUrl, NATS_URL: natsUrl, NATS_CREDS: natsCreds,
+            env: makeEnv({ RELAY_B_URL: relayBUrl, NATS_URL: natsUrl,
                    RELAY_DOMAIN: "company-a.aamp.workers.dev", AGENT_ID: "research-bot-01" }) },
     );
 
-    // Write NATS creds for research sandbox
     if (natsCreds) {
       const credsB64 = Buffer.from(natsCreds).toString("base64");
       await researchBox.runCommand({
         cmd:  "bash",
-        args: ["-c", `echo '${credsB64}' | base64 -d > /tmp/nats.creds && chmod 600 /tmp/nats.creds`],
+        args: ["-c", `printf '%s' '${credsB64}' | base64 -d > /tmp/nats.creds && chmod 600 /tmp/nats.creds`],
         cwd:  "/vercel/sandbox",
       });
     }
@@ -219,20 +218,19 @@ async function runDemo(sessionId: string): Promise<void> {
       snapFinance
         ? { source: { type: "snapshot", snapshotId: snapFinance }, timeout: 120_000,
             env: makeEnv({ RELAY_A_URL: relayAUrl, RELAY_B_URL: relayBUrl,
-                   RELAY_C_URL: relayCPublicUrl, NATS_URL: natsUrl, NATS_CREDS: natsCreds }) }
+                   RELAY_C_URL: relayCPublicUrl, NATS_URL: natsUrl }) }
         : { runtime: "node22",
             source: repoUrl ? { type: "git", url: repoUrl, revision: "feat/cloudflare-deploy" } : undefined,
             timeout: 120_000,
             env: makeEnv({ RELAY_A_URL: relayAUrl, RELAY_B_URL: relayBUrl,
-                   RELAY_C_URL: relayCPublicUrl, NATS_URL: natsUrl, NATS_CREDS: natsCreds }) },
+                   RELAY_C_URL: relayCPublicUrl, NATS_URL: natsUrl }) },
     );
 
-    // Write NATS creds for finance sandbox
     if (natsCreds) {
       const credsB64 = Buffer.from(natsCreds).toString("base64");
       await financeBox.runCommand({
         cmd:  "bash",
-        args: ["-c", `echo '${credsB64}' | base64 -d > /tmp/nats.creds && chmod 600 /tmp/nats.creds`],
+        args: ["-c", `printf '%s' '${credsB64}' | base64 -d > /tmp/nats.creds && chmod 600 /tmp/nats.creds`],
         cwd:  "/vercel/sandbox",
       });
     }
