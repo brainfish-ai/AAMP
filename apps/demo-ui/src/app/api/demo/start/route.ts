@@ -50,8 +50,8 @@ async function runDemo(sessionId: string): Promise<void> {
     sessionLogs.get(sessionId)?.push(line);
   }
 
-  const relayAUrl      = process.env.RELAY_A_URL    ?? "https://aamp-relay-a.workers.dev";
-  const relayBUrl      = process.env.RELAY_B_URL    ?? "https://aamp-relay-b.workers.dev";
+  const relayAUrl      = (process.env.RELAY_A_URL    ?? "https://aamp-relay-a.brainfish-pty-ltd.workers.dev").trim();
+  const relayBUrl      = (process.env.RELAY_B_URL    ?? "https://aamp-relay-b.brainfish-pty-ltd.workers.dev").trim();
   // Trim env values — Vercel's env storage can add a trailing newline; the Sandbox
   // API rejects env objects whose values contain embedded newlines (→ 400).
   const natsCreds      = (process.env.NATS_CREDS     ?? "").trim();
