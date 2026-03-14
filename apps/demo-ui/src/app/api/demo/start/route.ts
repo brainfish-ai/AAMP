@@ -34,7 +34,11 @@ export async function POST(_req: NextRequest): Promise<NextResponse> {
   sessionDone.set(sessionId, false);
 
   runDemo(sessionId).catch(err => {
-    sessionLogs.get(sessionId)?.push(`[error] ${String(err)}`);
+    // Vercel Sandbox APIError carries .json and .text with the actual API response body
+    const apiBody = (err as { json?: unknown; text?: string })?.json
+      ?? (err as { text?: string })?.text;
+    const detail = apiBody ? ` — API response: ${JSON.stringify(apiBody)}` : "";
+    sessionLogs.get(sessionId)?.push(`[error] ${String(err)}${detail}`);
     sessionDone.set(sessionId, true);
   });
 
@@ -48,12 +52,24 @@ async function runDemo(sessionId: string): Promise<void> {
 
   const relayAUrl      = process.env.RELAY_A_URL    ?? "https://aamp-relay-a.workers.dev";
   const relayBUrl      = process.env.RELAY_B_URL    ?? "https://aamp-relay-b.workers.dev";
-  const natsCreds      = process.env.NATS_CREDS     ?? "";
-  const natsUrl        = process.env.NATS_URL        ?? "";
-  const repoUrl        = process.env.REPO_URL        ?? "";
+  // Trim env values — Vercel's env storage can add a trailing newline; the Sandbox
+  // API rejects env objects whose values contain embedded newlines (→ 400).
+  const natsCreds      = (process.env.NATS_CREDS     ?? "").trim();
+  const natsUrl        = (process.env.NATS_URL        ?? "").trim();
+  const repoUrl        = (process.env.REPO_URL        ?? "").trim();
   const snapFinance    = process.env.VERCEL_SNAPSHOT_FINANCE;
   const snapResearch   = process.env.VERCEL_SNAPSHOT_RESEARCH;
   const snapCompliance = process.env.VERCEL_SNAPSHOT_COMPLIANCE;
+
+  // Build a clean env map, omitting empty values so the Sandbox API doesn't reject them.
+  function makeEnv(base: Record<string, string>): Record<string, string> {
+    return Object.fromEntries(Object.entries(base).filter(([, v]) => v.length > 0));
+  }
+
+  log("[system] Config: RELAY_A=" + relayAUrl);
+  log("[system] Config: RELAY_B=" + relayBUrl);
+  log("[system] Config: NATS_URL=" + natsUrl);
+  log("[system] Config: REPO_URL=" + repoUrl);
 
   let financeBox:    Sandbox | null = null;
   let researchBox:   Sandbox | null = null;
@@ -71,20 +87,22 @@ async function runDemo(sessionId: string): Promise<void> {
     // Boot first — needs to expose port and get public URL before Finance starts
     log("[system] Booting Sandbox C — Node.js Relay + Compliance Agent (Vercel Sandbox)...");
 
+    const complianceEnv = makeEnv({
+      NATS_URL: natsUrl, NATS_CREDS: natsCreds,
+      RELAY_DOMAIN: "company-b.sandbox", RELAY_PORT: "8087",
+      AGENT_ID: "compliance-bot-01",
+    });
+    log("[system] Compliance env keys: " + Object.keys(complianceEnv).join(", "));
+
     complianceBox = await Sandbox.create(
       snapCompliance
         ? { source: { type: "snapshot", snapshotId: snapCompliance }, timeout: 120_000,
-            ports: [8087],
-            env: { NATS_URL: natsUrl, NATS_CREDS: natsCreds,
-                   RELAY_DOMAIN: "company-c.sandbox", RELAY_PORT: "8087",
-                   AGENT_ID: "compliance-bot-01" } }
+            ports: [8087], env: complianceEnv }
         : { runtime: "node22",
             source: repoUrl ? { type: "git", url: repoUrl, revision: "feat/cloudflare-deploy" } : undefined,
             timeout: 120_000,
             ports: [8087],
-            env: { NATS_URL: natsUrl, NATS_CREDS: natsCreds,
-                   RELAY_DOMAIN: "company-c.sandbox", RELAY_PORT: "8087",
-                   AGENT_ID: "compliance-bot-01" } },
+            env: complianceEnv },
     );
 
     // Get public URL for Relay C — Cloudflare Workers can reach this!
@@ -148,13 +166,13 @@ async function runDemo(sessionId: string): Promise<void> {
     researchBox = await Sandbox.create(
       snapResearch
         ? { source: { type: "snapshot", snapshotId: snapResearch }, timeout: 120_000,
-            env: { RELAY_B_URL: relayBUrl, NATS_URL: natsUrl, NATS_CREDS: natsCreds,
-                   RELAY_DOMAIN: "company-b.aamp.workers.dev", AGENT_ID: "research-bot-01" } }
+            env: makeEnv({ RELAY_B_URL: relayBUrl, NATS_URL: natsUrl, NATS_CREDS: natsCreds,
+                   RELAY_DOMAIN: "company-a.aamp.workers.dev", AGENT_ID: "research-bot-01" }) }
         : { runtime: "python3.13",
             source: repoUrl ? { type: "git", url: repoUrl, revision: "feat/cloudflare-deploy" } : undefined,
             timeout: 120_000,
-            env: { RELAY_B_URL: relayBUrl, NATS_URL: natsUrl, NATS_CREDS: natsCreds,
-                   RELAY_DOMAIN: "company-b.aamp.workers.dev", AGENT_ID: "research-bot-01" } },
+            env: makeEnv({ RELAY_B_URL: relayBUrl, NATS_URL: natsUrl, NATS_CREDS: natsCreds,
+                   RELAY_DOMAIN: "company-a.aamp.workers.dev", AGENT_ID: "research-bot-01" }) },
     );
 
     if (!snapResearch) {
@@ -184,15 +202,13 @@ async function runDemo(sessionId: string): Promise<void> {
     financeBox = await Sandbox.create(
       snapFinance
         ? { source: { type: "snapshot", snapshotId: snapFinance }, timeout: 120_000,
-            env: { RELAY_A_URL: relayAUrl, RELAY_B_URL: relayBUrl,
-                   RELAY_C_URL: relayCPublicUrl,
-                   NATS_URL: natsUrl, NATS_CREDS: natsCreds } }
+            env: makeEnv({ RELAY_A_URL: relayAUrl, RELAY_B_URL: relayBUrl,
+                   RELAY_C_URL: relayCPublicUrl, NATS_URL: natsUrl, NATS_CREDS: natsCreds }) }
         : { runtime: "node22",
             source: repoUrl ? { type: "git", url: repoUrl, revision: "feat/cloudflare-deploy" } : undefined,
             timeout: 120_000,
-            env: { RELAY_A_URL: relayAUrl, RELAY_B_URL: relayBUrl,
-                   RELAY_C_URL: relayCPublicUrl,
-                   NATS_URL: natsUrl, NATS_CREDS: natsCreds } },
+            env: makeEnv({ RELAY_A_URL: relayAUrl, RELAY_B_URL: relayBUrl,
+                   RELAY_C_URL: relayCPublicUrl, NATS_URL: natsUrl, NATS_CREDS: natsCreds }) },
     );
 
     if (!snapFinance) {
