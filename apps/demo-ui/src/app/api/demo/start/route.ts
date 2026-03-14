@@ -110,19 +110,8 @@ async function runDemo(sessionId: string): Promise<void> {
     log(`[compliance-relay] Public URL: ${relayCPublicUrl}`);
     log(`[compliance-relay] Provider: Vercel Sandbox (Node.js) — port 8087 exposed`);
 
-    if (!snapCompliance) {
-      log("[compliance-relay] Installing dependencies (pnpm)...");
-      await complianceBox.runCommand("corepack", ["enable"]);
-      await complianceBox.runCommand("pnpm", ["install", "--no-frozen-lockfile"]);
-
-      log("[compliance-relay] Building packages...");
-      await complianceBox.runCommand("pnpm", ["--filter", "@aamp/core",     "build"]);
-      await complianceBox.runCommand("pnpm", ["--filter", "@aamp/identity", "build"]);
-      await complianceBox.runCommand("pnpm", ["--filter", "@aamp/sdk",      "build"]);
-    }
-
-    // Write NATS credentials to a file to avoid multiline env var truncation
-    // (Vercel Sandbox API may truncate env values at embedded newlines)
+    // Write NATS credentials to a temp file — pre-built bundles read from NATS_CREDS_FILE
+    // to avoid multiline env var truncation in the Sandbox API.
     if (natsCreds) {
       const credsB64 = Buffer.from(natsCreds).toString("base64");
       await complianceBox.runCommand({
@@ -133,11 +122,11 @@ async function runDemo(sessionId: string): Promise<void> {
       log("[compliance-relay] NATS creds written to /tmp/nats.creds");
     }
 
-    // Start Node.js Relay C via pnpm — runs in package dir so deps resolve correctly
-    log("[compliance-relay] Starting Relay C inside Vercel Sandbox (Node.js)...");
+    // Start pre-bundled Node.js Relay C (no tsx / pnpm deps needed — esbuild bundle)
+    log("[compliance-relay] Starting Relay C (pre-built bundle)...");
     await complianceBox.runCommand({
-      cmd:      "pnpm",
-      args:     ["--filter", "@aamp/relay", "run", "start:node"],
+      cmd:      "node",
+      args:     ["packages/relay/relay-node-bundle.cjs"],
       cwd:      "/vercel/sandbox",
       detached: true,
       env:      makeEnv({
@@ -153,10 +142,10 @@ async function runDemo(sessionId: string): Promise<void> {
     await sleep(3_000);
     log("[compliance-relay] Relay C online ✓");
 
-    // Start compliance agent via pnpm — runs in package dir so deps resolve correctly
+    // Start pre-bundled Compliance Agent (no tsx / pnpm deps needed — esbuild bundle)
     const complianceCmd = await complianceBox.runCommand({
-      cmd:      "pnpm",
-      args:     ["--filter", "@aamp/example-compliance-agent", "run", "start"],
+      cmd:      "node",
+      args:     ["examples/compliance-agent/compliance-bundle.cjs"],
       cwd:      "/vercel/sandbox",
       detached: true,
       env:      makeEnv({
@@ -186,6 +175,7 @@ async function runDemo(sessionId: string): Promise<void> {
                    RELAY_DOMAIN: "company-a.aamp.workers.dev", AGENT_ID: "research-bot-01" }) },
     );
 
+    // Write NATS creds for research sandbox
     if (natsCreds) {
       const credsB64 = Buffer.from(natsCreds).toString("base64");
       await researchBox.runCommand({
